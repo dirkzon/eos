@@ -12,6 +12,22 @@ import {
   renameEntity,
 } from '@/lib/filesystem/operations';
 
+// Reject path traversal, leading/trailing slash, empty segments, '.' / '..'.
+function isSafeRelPath(p: string): boolean {
+  if (!p || p.startsWith('/') || p.endsWith('/')) return false;
+  return p.split('/').every((seg) => seg.length > 0 && seg !== '.' && seg !== '..');
+}
+
+// Parse `[ 'packages', pkg, type, ...entityName ]`. entityName may span multiple segments.
+function parseEntityPath(
+  segments: string[]
+): { packageName: string; entityType: EntityType; entityName: string } | null {
+  if (segments.length < 4 || segments[0] !== 'packages') return null;
+  const entityName = segments.slice(3).join('/');
+  if (!isSafeRelPath(entityName)) return null;
+  return { packageName: segments[1], entityType: segments[2] as EntityType, entityName };
+}
+
 // Validate YAML
 function validateYaml(content: string): ValidationResult {
   const errors: Array<{ line?: number; column?: number; message: string; severity: 'error' | 'warning' }> = [];
@@ -53,21 +69,22 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json(tree);
     }
 
-    // GET /api/filesystem/packages/[packageName]/[entityType]/[entityName] - Read entity files
-    if (pathSegments.length === 4 && pathSegments[0] === 'packages') {
-      const [, packageName, entityType, entityName] = pathSegments;
+    // GET /api/filesystem/packages/[packageName]/[entityType]/[...entityName] - Read entity files
+    const entity = parseEntityPath(pathSegments);
+    if (entity) {
+      const { packageName, entityType, entityName } = entity;
 
       // Lightweight mtime-only check (no file reads)
       const url = new URL(_request.url);
       if (url.searchParams.has('mtimes')) {
-        const mtime = await getEntityMtimeOnly(packageName, entityType as EntityType, entityName);
+        const mtime = await getEntityMtimeOnly(packageName, entityType, entityName);
         if (mtime === null) {
           return NextResponse.json({ error: 'Entity not found' }, { status: 404 });
         }
         return NextResponse.json({ mtime });
       }
 
-      const files = await readEntityFiles(packageName, entityType as EntityType, entityName);
+      const files = await readEntityFiles(packageName, entityType, entityName);
       if (!files) {
         return NextResponse.json({ error: 'Entity not found' }, { status: 404 });
       }
@@ -89,11 +106,11 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
     const resolvedParams = await params;
     const pathSegments = resolvedParams.path || [];
 
-    // PUT /api/filesystem/packages/[packageName]/[entityType]/[entityName] - Write entity files
-    if (pathSegments.length === 4 && pathSegments[0] === 'packages') {
-      const [, packageName, entityType, entityName] = pathSegments;
+    // PUT /api/filesystem/packages/[packageName]/[entityType]/[...entityName] - Write entity files
+    const entity = parseEntityPath(pathSegments);
+    if (entity) {
       const body: WriteFilesRequest = await request.json();
-      const result = await writeEntityFiles(packageName, entityType as EntityType, entityName, body);
+      const result = await writeEntityFiles(entity.packageName, entity.entityType, entity.entityName, body);
 
       if (result.conflict) {
         return NextResponse.json({ error: 'File modified externally', mtime: result.mtime }, { status: 409 });
@@ -121,6 +138,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (pathSegments.length === 3 && pathSegments[0] === 'packages') {
       const [, packageName, entityType] = pathSegments;
       const body: { entityName: string } = await request.json();
+      if (!isSafeRelPath(body.entityName)) {
+        return NextResponse.json({ error: 'Invalid entity name' }, { status: 400 });
+      }
       await createEntity(packageName, entityType as EntityType, body.entityName);
       return NextResponse.json({ success: true });
     }
@@ -147,10 +167,10 @@ export async function DELETE(_request: NextRequest, { params }: { params: Promis
     const resolvedParams = await params;
     const pathSegments = resolvedParams.path || [];
 
-    // DELETE /api/filesystem/packages/[packageName]/[entityType]/[entityName] - Delete entity
-    if (pathSegments.length === 4 && pathSegments[0] === 'packages') {
-      const [, packageName, entityType, entityName] = pathSegments;
-      await deleteEntity(packageName, entityType as EntityType, entityName);
+    // DELETE /api/filesystem/packages/[packageName]/[entityType]/[...entityName] - Delete entity
+    const entity = parseEntityPath(pathSegments);
+    if (entity) {
+      await deleteEntity(entity.packageName, entity.entityType, entity.entityName);
       return NextResponse.json({ success: true });
     }
 
@@ -169,11 +189,14 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     const resolvedParams = await params;
     const pathSegments = resolvedParams.path || [];
 
-    // PATCH /api/filesystem/packages/[packageName]/[entityType]/[entityName] - Rename entity
-    if (pathSegments.length === 4 && pathSegments[0] === 'packages') {
-      const [, packageName, entityType, entityName] = pathSegments;
+    // PATCH /api/filesystem/packages/[packageName]/[entityType]/[...entityName] - Rename entity
+    const entity = parseEntityPath(pathSegments);
+    if (entity) {
       const body: { newName: string } = await request.json();
-      await renameEntity(packageName, entityType as EntityType, entityName, body.newName);
+      if (!isSafeRelPath(body.newName)) {
+        return NextResponse.json({ error: 'Invalid new name' }, { status: 400 });
+      }
+      await renameEntity(entity.packageName, entity.entityType, entity.entityName, body.newName);
       return NextResponse.json({ success: true });
     }
 

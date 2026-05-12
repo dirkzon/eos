@@ -115,12 +115,12 @@ export default function SimulatorGantt({ timeline, stats }: Props) {
   useEffect(() => {
     updateLayout();
     window.addEventListener('resize', updateLayout);
-    const observer = new ResizeObserver(updateLayout);
     const scrollParent = wrapperRef.current?.closest('.overflow-auto');
-    if (scrollParent) observer.observe(scrollParent);
+    const observer = scrollParent ? new ResizeObserver(updateLayout) : null;
+    if (scrollParent && observer) observer.observe(scrollParent);
     return () => {
       window.removeEventListener('resize', updateLayout);
-      observer.disconnect();
+      observer?.disconnect();
     };
   }, [updateLayout]);
 

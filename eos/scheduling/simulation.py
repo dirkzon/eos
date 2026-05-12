@@ -38,6 +38,42 @@ class ProtocolRunConfig:
     type: str
     iterations: int
     max_concurrent: int = 0
+    priority: int = 1
+
+
+@dataclass
+class DeadlockTaskInfo:
+    """One pending task in a deadlocked protocol run."""
+
+    name: str
+    blocked_on: str  # "resources/devices" or "deps: [d1, d2, ...]"
+
+
+@dataclass
+class DeadlockRunInfo:
+    """One incomplete protocol run when a deadlock was detected."""
+
+    protocol_run_name: str
+    pending_tasks: list[DeadlockTaskInfo]
+
+
+@dataclass
+class DeadlockLockInfo:
+    """One device or resource lock at the time of deadlock."""
+
+    name: str  # "lab.device" for devices, plain name for resources
+    owner: str  # "protocol_run.task"
+    held: bool
+
+
+@dataclass
+class DeadlockInfo:
+    """Structured deadlock information for surfacing to callers."""
+
+    queued_count: int
+    pending_runs: list[DeadlockRunInfo]
+    device_locks: list[DeadlockLockInfo]
+    resource_locks: list[DeadlockLockInfo]
 
 
 @dataclass
@@ -57,6 +93,7 @@ class ProtocolRunInstance:
     protocol_graph: ProtocolGraph
     tasks: dict[str, TaskDef]
     ancestors: dict[str, set[str]]
+    priority: int = 0
     all_tasks: set[str] = field(default_factory=set)
     completed_tasks: set[str] = field(default_factory=set)
     task_device_assignments: dict[str, dict[str, DeviceAssignmentDef]] = field(default_factory=dict)
@@ -108,6 +145,7 @@ def load_sim_config(path: str) -> SimConfig:
             type=e["type"],
             iterations=e["iterations"],
             max_concurrent=e.get("max_concurrent", 0),
+            priority=e.get("priority", 1),
         )
         for e in raw.get("protocols", [])
     ]
@@ -176,6 +214,7 @@ def create_protocol_run_instances(
     protocol_type: str,
     protocol_def: ProtocolDef,
     iterations: int,
+    priority: int = 0,
 ) -> list[ProtocolRunInstance]:
     """Create N protocol run instances with independent graphs."""
     instances = []
@@ -195,6 +234,7 @@ def create_protocol_run_instances(
                 protocol_graph=graph,
                 tasks=task_map,
                 ancestors=ancestors,
+                priority=priority,
                 all_tasks=all_tasks,
             )
         )
@@ -336,7 +376,7 @@ class SimGreedyScheduler:
         """One scheduling cycle across all active protocols."""
         scheduled: list[ScheduledSimTask] = []
 
-        for exp in protocol_runs:
+        for exp in sorted(protocol_runs, key=lambda e: e.priority, reverse=True):
             if exp.completed_tasks == exp.all_tasks:
                 continue
 
@@ -571,7 +611,7 @@ class SimCpSatScheduler:
             completed_by_exp=completed_by_exp,
             running_by_exp=running_by_exp,
             current_time=current_time,
-            protocol_run_priorities={exp.name: 0 for exp in protocol_runs},
+            protocol_run_priorities={exp.name: exp.priority for exp in protocol_runs},
             eligible_devices_by_type=self._devices_by_type,
             eligible_resources_by_type=self._resources_by_type_with_labs,
             previous_device_assignments=self._device_assignments,
@@ -596,6 +636,10 @@ class SimCpSatScheduler:
                 if task_name in exp.completed_tasks or (exp.name, task_name) in running_tasks:
                     continue
                 if start_time > current_time:
+                    continue
+                # When jitter stretches a predecessor, the solver's planned start may
+                # arrive before all ancestors have finished.  Guard against that.
+                if not exp.ancestors[task_name].issubset(exp.completed_tasks):
                     continue
 
                 task = exp.tasks[task_name]
@@ -654,12 +698,13 @@ class Simulator:
         self._verbose = verbose
 
         self._active: list[ProtocolRunInstance] = []
-        self._queued: list[ProtocolRunInstance] = list(all_instances)
+        self._queued: list[ProtocolRunInstance] = sorted(all_instances, key=lambda e: e.priority, reverse=True)
         self._completed_protocol_runs: set[str] = set()
         self._total_protocol_runs = len(all_instances)
 
         self._scheduler_time_ms = 0.0
         self._scheduler_calls = 0
+        self._deadlock_info: DeadlockInfo | None = None
 
     def run(self) -> list[TimelineEvent]:
         """Run the simulation to completion, returning the event timeline."""
@@ -716,6 +761,7 @@ class Simulator:
                 if next_time is not None:
                     self._current_time = next_time
                 else:
+                    self._deadlock_info = self._capture_deadlock_info()
                     _echo_err("\nDEADLOCK: No running tasks but protocols are incomplete!")
                     self._print_deadlock_info()
                     break
@@ -817,6 +863,48 @@ class Simulator:
     @property
     def scheduler_calls(self) -> int:
         return self._scheduler_calls
+
+    @property
+    def deadlock_info(self) -> DeadlockInfo | None:
+        return self._deadlock_info
+
+    def _capture_deadlock_info(self) -> DeadlockInfo:
+        pending_runs: list[DeadlockRunInfo] = []
+        for exp in self._active:
+            remaining = exp.all_tasks - exp.completed_tasks
+            if not remaining:
+                continue
+            tasks: list[DeadlockTaskInfo] = []
+            for task_name in sorted(remaining):
+                deps = exp.protocol_graph.get_task_dependencies(task_name)
+                unmet = [d for d in deps if d not in exp.completed_tasks]
+                blocked_on = f"deps: {unmet}" if unmet else "resources/devices"
+                tasks.append(DeadlockTaskInfo(name=task_name, blocked_on=blocked_on))
+            pending_runs.append(DeadlockRunInfo(protocol_run_name=exp.name, pending_tasks=tasks))
+
+        device_locks = [
+            DeadlockLockInfo(
+                name=f"{lab}.{dev}",
+                owner=f"{entry.protocol_run_name}.{entry.task_name}",
+                held=entry.held,
+            )
+            for (lab, dev), entry in sorted(self._lock_manager.device_locks.items())
+        ]
+        resource_locks = [
+            DeadlockLockInfo(
+                name=res,
+                owner=f"{entry.protocol_run_name}.{entry.task_name}",
+                held=entry.held,
+            )
+            for res, entry in sorted(self._lock_manager.resource_locks.items())
+        ]
+
+        return DeadlockInfo(
+            queued_count=len(self._queued),
+            pending_runs=pending_runs,
+            device_locks=device_locks,
+            resource_locks=resource_locks,
+        )
 
     def _print_deadlock_info(self) -> None:
         if self._queued:
@@ -1031,7 +1119,7 @@ def run_simulation(
     seed: int | None = None,
     scheduler_type: str = "greedy",
     quiet: bool = False,
-) -> list[TimelineEvent]:
+) -> tuple[list[TimelineEvent], DeadlockInfo | None]:
     """Run a complete scheduling simulation and print results."""
     echo = _echo if not quiet else lambda *_a, **_k: None
 
@@ -1054,7 +1142,9 @@ def run_simulation(
 
     for protocol_run in sim_config.protocol_runs:
         protocol_def = protocols[protocol_run.type]
-        instances = create_protocol_run_instances(protocol_run.type, protocol_def, protocol_run.iterations)
+        instances = create_protocol_run_instances(
+            protocol_run.type, protocol_def, protocol_run.iterations, priority=protocol_run.priority
+        )
         all_instances.extend(instances)
         total_duration = sum(t.duration for t in protocol_def.tasks)
         echo(
@@ -1084,7 +1174,7 @@ def run_simulation(
         print_stats(timeline)
         _print_scheduler_overhead(sim.scheduler_time_ms, sim.scheduler_calls)
 
-    return timeline
+    return timeline, sim.deadlock_info
 
 
 def compute_sim_stats(

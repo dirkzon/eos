@@ -20,6 +20,7 @@ export async function getTaskPlugins(): Promise<TaskPluginInfo[]> {
       .select({
         type: definitions.name,
         data: definitions.data,
+        packageName: definitions.packageName,
       })
       .from(definitions)
       .where(eq(definitions.type, 'task'));
@@ -29,6 +30,7 @@ export async function getTaskPlugins(): Promise<TaskPluginInfo[]> {
       return {
         type: taskDef.type,
         description: taskDef.desc,
+        package: row.packageName,
       };
     });
   } catch (error) {

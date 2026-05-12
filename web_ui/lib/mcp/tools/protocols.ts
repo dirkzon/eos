@@ -200,7 +200,7 @@ export function registerProtocolTools(server: McpServer) {
     {
       title: 'Validate ProtocolRun YAML',
       description:
-        'Validate protocol YAML against lab and task specs (devices, resources, parameters, dependencies). Always call before applying YAML with updateProtocolYAML.',
+        'Validate protocol YAML against lab and task specs (devices, resources, parameters, dependencies). Always call before applying YAML with update_protocol_yaml.',
       inputSchema: {
         yaml: z.string().describe('Complete protocol YAML content'),
       },

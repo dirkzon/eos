@@ -9,6 +9,7 @@ import { ConfirmationDialog } from './dialogs/ConfirmationDialog';
 import { loadLabs, unloadLabs, reloadLabs } from '../api/labs';
 import type { Lab } from '@/lib/types/management';
 import { useOrchestratorConnected } from '@/contexts/OrchestratorStatusContext';
+import { packageColumn } from './columns';
 
 interface LabsTabProps {
   initialLabs: Lab[];
@@ -26,6 +27,7 @@ export function LabsTab({ initialLabs }: LabsTabProps) {
       header: 'Lab Name',
       cell: ({ row }) => <div className="font-medium">{row.getValue('name')}</div>,
     },
+    packageColumn<Lab>(initialLabs),
     {
       accessorKey: 'loaded',
       header: 'Status',

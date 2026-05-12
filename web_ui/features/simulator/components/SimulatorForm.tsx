@@ -30,7 +30,10 @@ export function SimulatorForm({ protocolTypes, loading, onRun, onLoadConfig, con
   const addProtocol = () => {
     setConfig({
       ...config,
-      protocols: [...config.protocols, { type: protocolTypes[0] || '', iterations: 10, max_concurrent: 0 }],
+      protocols: [
+        ...config.protocols,
+        { type: protocolTypes[0] || '', iterations: 10, max_concurrent: 0, priority: 1 },
+      ],
     });
   };
 
@@ -117,6 +120,10 @@ export function SimulatorForm({ protocolTypes, loading, onRun, onLoadConfig, con
               <span className="text-xs text-gray-500 dark:text-gray-400">Max Concurrent</span>
               <DescriptionTooltip description="Maximum number of concurrent runs allowed for this protocol type. 0 means unlimited." />
             </div>
+            <div className="w-20">
+              <span className="text-xs text-gray-500 dark:text-gray-400">Priority</span>
+              <DescriptionTooltip description="Scheduling priority. Higher values are scheduled first." />
+            </div>
             <div className="w-8" />
           </div>
           <div className="space-y-2">
@@ -150,6 +157,15 @@ export function SimulatorForm({ protocolTypes, loading, onRun, onLoadConfig, con
                     min={0}
                     value={protocol.max_concurrent}
                     onChange={(e) => updateProtocol(i, { max_concurrent: parseInt(e.target.value) || 0 })}
+                    className="h-8 text-sm"
+                  />
+                </div>
+                <div className="w-20">
+                  <Input
+                    type="number"
+                    min={0}
+                    value={protocol.priority}
+                    onChange={(e) => updateProtocol(i, { priority: parseInt(e.target.value) || 1 })}
                     className="h-8 text-sm"
                   />
                 </div>

@@ -6,6 +6,7 @@ import { Download, Upload } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { fetchPackages, fetchProtocolTypes, runSimulation } from '../api/simulator';
 import type { SimConfig, SimResults } from '../types';
+import { DeadlockBanner } from './DeadlockBanner';
 import { SimulatorForm } from './SimulatorForm';
 import { SimulatorStats } from './SimulatorStats';
 
@@ -20,7 +21,7 @@ const SimulatorGantt = dynamic(() => import('./SimulatorGantt'), {
 
 const DEFAULT_CONFIG: SimConfig = {
   packages: [],
-  protocols: [{ type: '', iterations: 10, max_concurrent: 0 }],
+  protocols: [{ type: '', iterations: 10, max_concurrent: 0, priority: 1 }],
   scheduler: 'greedy',
   jitter: 0,
   seed: null,
@@ -38,7 +39,9 @@ export function SimulatorClient() {
     const load = async () => {
       try {
         const [pkgs, protos] = await Promise.all([fetchPackages(), fetchProtocolTypes()]);
-        const pkgNames = Object.keys(pkgs);
+        const pkgNames = Object.entries(pkgs)
+          .filter(([, active]) => active)
+          .map(([name]) => name);
         const protoNames = Object.keys(protos);
         setPackages(pkgNames);
         setProtocolTypes(protoNames);
@@ -150,6 +153,7 @@ export function SimulatorClient() {
             </div>
           </div>
 
+          {results.deadlock && <DeadlockBanner deadlock={results.deadlock} scheduler={results.stats.scheduler_type} />}
           <SimulatorStats stats={results.stats} />
           <SimulatorGantt timeline={results.timeline} stats={results.stats} />
         </>

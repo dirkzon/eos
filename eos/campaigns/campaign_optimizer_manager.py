@@ -61,7 +61,12 @@ class CampaignOptimizerManager:
         log.debug("Campaign optimizer manager initialized.")
 
     # Tier classification for optimizer parameter overrides
-    _TIER1_RUNTIME_KEYS: ClassVar[set[str]] = {"p_bayesian", "p_ai", "ai_history_size", "ai_additional_context"}
+    _TIER1_RUNTIME_KEYS: ClassVar[set[str]] = {
+        "p_bayesian",
+        "p_ai",
+        "ai_history_size",
+        "ai_additional_context",
+    }
     _TIER2_INIT_KEYS: ClassVar[set[str]] = {
         "ai_model",
         "ai_api_key",

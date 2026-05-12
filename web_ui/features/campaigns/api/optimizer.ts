@@ -35,7 +35,11 @@ export async function getOptimizerInfo(campaignName: string): Promise<OptimizerI
  */
 export async function updateOptimizerParams(
   campaignName: string,
-  params: { p_bayesian?: number; ai_history_size?: number; ai_additional_context?: string }
+  params: {
+    p_bayesian?: number;
+    ai_history_size?: number;
+    ai_additional_context?: string;
+  }
 ): Promise<ActionResult> {
   try {
     await orchestratorPut(`/campaigns/${campaignName}/optimizer/params`, params);

@@ -384,21 +384,11 @@ class BaseScheduler(AbstractScheduler, ABC):
 
         resolved_resources = await self._build_resolved_resources(db, protocol_run_name, task)
         if resolved_resources is None:
-            log.warning(
-                "RUN '%s' - Cannot resolve resources for task '%s'. Check that required labs are loaded.",
-                protocol_run_name,
-                task_name,
-            )
             return None
         task.resources = resolved_resources
 
         assigned_devices = await self._build_assigned_devices(db, protocol_run_name, task)
         if assigned_devices is None:
-            log.warning(
-                "RUN '%s' - Cannot resolve devices for task '%s'. Check that required labs are loaded.",
-                protocol_run_name,
-                task_name,
-            )
             return None
 
         return await self._finalize_scheduling(

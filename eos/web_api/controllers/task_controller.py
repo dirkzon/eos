@@ -13,6 +13,11 @@ class TaskTypesResponse(BaseModel):
 
 class ReloadTaskPluginsRequest(BaseModel):
     task_types: list[str]
+    if_unused: bool = False
+
+
+class ReloadTaskPluginsResponse(BaseModel):
+    reloaded: list[str]
 
 
 class TaskController(Controller):
@@ -53,7 +58,7 @@ class TaskController(Controller):
     @post("/reload")
     async def reload_tasks(
         self, data: ReloadTaskPluginsRequest, db: AsyncDbSession, orchestrator: Orchestrator
-    ) -> dict[str, str]:
+    ) -> ReloadTaskPluginsResponse:
         """Reload specified task plugins."""
-        await orchestrator.loading.reload_task_plugins(db, set(data.task_types))
-        return {"message": "Task plugins reloaded"}
+        reloaded = await orchestrator.loading.reload_task_plugins(db, set(data.task_types), if_unused=data.if_unused)
+        return ReloadTaskPluginsResponse(reloaded=sorted(reloaded))

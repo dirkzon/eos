@@ -8,6 +8,7 @@ import { registerOptimizerTools } from './optimizer';
 import { registerSqlTools } from './sql';
 import { registerDeviceTools } from './devices';
 import { registerFilesystemTools } from './filesystem';
+import { registerSimulatorTools } from './simulator';
 
 export function registerAllTools(server: McpServer) {
   registerTaskTools(server);
@@ -19,4 +20,5 @@ export function registerAllTools(server: McpServer) {
   registerDeviceTools(server);
   registerSqlTools(server);
   registerFilesystemTools(server);
+  registerSimulatorTools(server);
 }

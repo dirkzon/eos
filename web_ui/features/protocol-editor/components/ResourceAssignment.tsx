@@ -84,13 +84,14 @@ export function ResourceAssignment({
         </label>
 
         {enableReferenceMode ? (
-          <AssignmentModeSelector mode={selectedMode} onChange={handleModeChange} color="green" />
+          <AssignmentModeSelector mode={selectedMode} onChange={handleModeChange} color="blue" />
         ) : (
           <div className="flex gap-1.5 shrink-0">
             {(['static', 'dynamic'] as const).map((mode) => (
               <button
                 key={mode}
                 type="button"
+                tabIndex={-1}
                 onClick={() => handleModeChange(mode)}
                 className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors capitalize ${
                   selectedMode === mode

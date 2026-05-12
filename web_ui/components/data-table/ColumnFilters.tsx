@@ -3,6 +3,7 @@
 import * as React from 'react';
 import { Column } from '@tanstack/react-table';
 import { Input } from '@/components/ui/Input';
+import { MultiCombobox } from '@/components/ui/MultiCombobox';
 import * as Select from '@radix-ui/react-select';
 import { Check, ChevronDown } from 'lucide-react';
 
@@ -42,28 +43,19 @@ export function ColumnFilter<TData>({ column, filterType = 'text', filterOptions
     const singleValue = filterType === 'select' ? ((filterValue as string) ?? '') : '';
 
     if (filterType === 'multiselect') {
+      const options = filterOptions.map((opt) => ({ value: opt, label: opt }));
       return (
-        <div className="space-y-1">
-          {filterOptions.map((option) => (
-            <label
-              key={option}
-              className="flex items-center gap-2 cursor-pointer hover:bg-gray-50 dark:hover:bg-slate-700 px-2 py-1 rounded"
-            >
-              <input
-                type="checkbox"
-                checked={selectedValues.includes(option)}
-                onChange={(e) => {
-                  const newValue = e.target.checked
-                    ? [...selectedValues, option]
-                    : selectedValues.filter((v) => v !== option);
-                  column.setFilterValue(newValue.length > 0 ? newValue : undefined);
-                }}
-                className="rounded border-gray-300 dark:border-slate-600 text-blue-600 dark:text-blue-500 focus:ring-blue-500 dark:bg-slate-700"
-              />
-              <span className="text-sm dark:text-gray-300">{option}</span>
-            </label>
-          ))}
-        </div>
+        <MultiCombobox
+          options={options}
+          value={selectedValues}
+          onChange={(newValue) => {
+            const val = newValue.length > 0 ? newValue : undefined;
+            setFilterValue(val);
+            column.setFilterValue(val);
+          }}
+          placeholder={`Filter ${column.id}...`}
+          searchPlaceholder="Search..."
+        />
       );
     }
 

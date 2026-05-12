@@ -241,5 +241,9 @@ export const serializeResourceAssignment = (
     const base = { allocation_type: 'dynamic' as const, resource_type: assignment.resource_type };
     return hold ? { ...base, hold: true } : base;
   }
-  return hold && typeof assignment === 'string' && assignment !== '' ? { name: assignment, hold: true } : assignment;
+  // Static resource: emit { name, hold } only if hold is set and the name is non-empty.
+  if (hold && typeof assignment === 'string' && assignment) {
+    return { name: assignment, hold: true };
+  }
+  return assignment;
 };

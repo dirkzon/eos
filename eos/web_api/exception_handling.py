@@ -57,8 +57,8 @@ def general_exception_handler(request: Request, exc: Exception) -> Response:
         return Response(content={"error": detail}, status_code=400)
 
     # Other HTTP and general exceptions
-    log.error(f"API error: {exc!s}")
     status_code = exc.status_code if isinstance(exc, HTTPException) else HTTP_500_INTERNAL_SERVER_ERROR
     detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+    log.error(f"API error: {request.method} {request.url.path}: {detail}", exc_info=exc)
 
     return Response(content={"error": detail}, status_code=status_code)

@@ -14,6 +14,9 @@ VALID_IDENTIFIERS = [
     "Move To Mixer",
     "flow rate 2",
     "026749f8f40342b38157f9824ae2f512",
+    "has-dash",
+    "with-dash and_underscore",
+    "-",
 ]
 
 INVALID_IDENTIFIERS = [
@@ -24,7 +27,6 @@ INVALID_IDENTIFIERS = [
     "has.dot",
     "tab\there",
     "a$b",
-    "has-dash",
 ]
 
 

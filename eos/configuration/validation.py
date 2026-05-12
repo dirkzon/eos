@@ -16,6 +16,7 @@ from eos.configuration.exceptions import (
     EosResourceConfigurationError,
     EosTaskValidationError,
 )
+from eos.configuration.protocol_graph import TaskReferenceOrderingValidator
 from eos.configuration.registries import DeviceSpecRegistry, TaskSpecRegistry
 from eos.configuration.utils import (
     is_device_reference,
@@ -215,6 +216,7 @@ class ProtocolValidator:
         self._validate_labs()
         self._validate_resources()
         self._task_validator.validate_all_tasks()
+        TaskReferenceOrderingValidator(self._protocol).validate()
 
     def _validate_labs(self) -> None:
         """Ensure all required labs exist."""

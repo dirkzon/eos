@@ -394,6 +394,7 @@ export function SubmitProtocolRunDialog({
                 {/* Collapsible Header */}
                 <button
                   type="button"
+                  tabIndex={-1}
                   onClick={() => toggleTaskExpansion(taskConfig.name)}
                   className="w-full px-3 py-2.5 flex items-center justify-between hover:bg-gray-100 dark:hover:bg-slate-700/50 transition-colors rounded-t-md"
                 >

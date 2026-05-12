@@ -179,44 +179,41 @@ def build_system_prompt(domain: Domain) -> str:
 
     sections.append(
         "OPTIMIZATION STRATEGY:\n"
-        "  1. EXPLORE AGGRESSIVELY: Default to exploration. Move 30-70% of parameter ranges between "
-        "protocols. Push parameters to extremes — optima are often near boundaries. Small tweaks waste protocols.\n"
-        "  2. MAXIMIZE INFORMATION: Every experiment should reveal something new. Test corners, edges, "
-        "and extreme combinations. An experiment that confirms what you know is wasted.\n"
-        "  3. USE DOMAIN KNOWLEDGE: Apply scientific expertise to predict promising regions and "
-        "reason about cause-and-effect between parameters.\n"
-        "  4. ANALYZE BUT DON'T OVERFIT: Study history for trends and interactions, but maintain "
-        "skepticism about patterns until confirmed by multiple data points.\n"
-        "  5. RESIST PREMATURE EXPLOITATION: Do not converge early. Keep exploring distant regions "
-        "even when a promising area is found. Missing the global optimum is costlier than extra exploration.\n"
-        "  6. NEVER REPEAT: Never suggest parameters identical or nearly identical to past protocols.\n"
-        "  7. DIVERSIFY BATCHES: Spread suggestions across maximally different regions — never cluster.\n"
-        "  8. ESCAPE PLATEAUS DECISIVELY: If results plateau, make radical changes to ALL parameters. "
-        "Jump to unexplored regions. Try counterintuitive combinations.\n"
-        "  9. THINK CONTRARIAN: Periodically test the opposite of your current hypothesis. "
-        "The most valuable protocols challenge your assumptions.\n"
-        "  10. RESPECT EXPERT INSIGHTS: When expert insights are provided, acknowledge them explicitly in your "
-        "journal entry and incorporate them into your experimental design. Expert insights represent "
-        "domain knowledge from the user — treat them as high-priority directives. If an insight "
-        "conflicts with your current hypothesis, prioritize the insight and explain your reasoning. "
-        "If you believe following an insight would be counterproductive, explain why in the journal "
-        "but still design at least one experiment that follows the insight."
+        "  1. EXPLORE AGGRESSIVELY: Default to broad exploration. Push parameters toward extremes and "
+        "test diverse regions — optima are often near boundaries. Never repeat or nearly repeat past "
+        "experiments, and spread batch suggestions across maximally different regions.\n"
+        "  2. USE DOMAIN KNOWLEDGE: Apply scientific reasoning to predict promising regions and "
+        "understand cause-and-effect between parameters.\n"
+        "  3. ANALYZE CRITICALLY: Study history for trends and interactions, but remain skeptical of "
+        "patterns until confirmed by multiple data points. If results plateau, make radical changes.\n"
+        "  4. RESPECT EXPERT INSIGHTS: When expert insights are provided, incorporate them into your "
+        "experimental design and acknowledge them in your journal entry. Prioritize insights over "
+        "your own hypotheses — if you disagree, explain why but still test the insight."
     )
 
     sections.append(
-        "JOURNAL GUIDELINES:\n"
-        "Your journal_entry should document:\n"
-        "  - What patterns or trends you observe in the data so far\n"
-        "  - What hypothesis you are testing with this batch of suggestions\n"
-        "  - Why you chose these specific parameter values\n"
-        "  - What you expect to learn from these protocols\n"
-        "  - If expert insights were provided, explicitly state how you incorporated them"
+        "JOURNAL FORMAT (use markdown, use LaTeX for any math e.g. $x^2$ or $$\\sum_{i=1}^n x_i$$):\n"
+        "Your journal_entry must follow this structure:\n"
+        "```\n"
+        "## Run {N} (or Runs {N}-{M} for batches)\n"
+        "\n"
+        "### Observations\n"
+        "- Key patterns, trends, or surprises from past runs\n"
+        "- What worked, what didn't, and why\n"
+        "- For the first run, state your prior assumptions about the system\n"
+        "\n"
+        "### Hypotheses\n"
+        "- Your current hypotheses, each grounded in specific observations above\n"
+        "- Note which hypotheses are new vs. carried over or revised from prior runs\n"
+        "\n"
+        "### Actions\n"
+        "- What you are testing in this batch and which hypothesis each experiment targets\n"
+        "```"
     )
 
     sections.append(
         "RULES:\n"
-        "  - All values must be within the specified bounds.\n"
-        "  - All constraints must be satisfied.\n"
+        "  - All values must be within the specified bounds and all constraints must be satisfied.\n"
         "  - Parameter names must be EXACTLY as listed above, including dots "
         "(e.g. 'task.param', NOT 'task_param')."
     )
@@ -252,6 +249,18 @@ def _set_api_key(model: str, api_key: str | None) -> None:
         os.environ[env_var] = api_key
 
 
+def _resolve_model(model: str, model_settings: dict[str, Any] | None) -> tuple[Any, bool]:
+    """Resolve the model string to a Pydantic AI model instance."""
+    is_claude_sdk = model.startswith(_CLAUDE_AGENT_SDK_PREFIX)
+    if not is_claude_sdk:
+        return model, False
+    from eos.optimization.claude_agent_sdk_model import ClaudeAgentSDKModel  # noqa: PLC0415
+
+    sdk_model_name = model[len(_CLAUDE_AGENT_SDK_PREFIX) :]
+    effort = model_settings.get("effort") if model_settings else None
+    return ClaudeAgentSDKModel(model_name=sdk_model_name, effort=effort), True
+
+
 class BeaconAIAgent:
     def __init__(
         self,
@@ -272,16 +281,8 @@ class BeaconAIAgent:
         self._additional_context: str | None = additional_context
         self._protocol_run_parameters_schedule = protocol_run_parameters_schedule
 
-        resolved_model = model
-        if model.startswith(_CLAUDE_AGENT_SDK_PREFIX):
-            from eos.optimization.claude_agent_sdk_model import ClaudeAgentSDKModel  # noqa: PLC0415
-
-            sdk_model_name = model[len(_CLAUDE_AGENT_SDK_PREFIX) :]
-            effort = model_settings.get("effort") if model_settings else None
-            resolved_model = ClaudeAgentSDKModel(
-                model_name=sdk_model_name,
-                effort=effort,
-            )
+        resolved_model, is_claude_sdk = _resolve_model(model, model_settings)
+        self._code_execution = is_claude_sdk
 
         # Filter out SDK-specific keys before passing to Pydantic AI ModelSettings
         if isinstance(model_settings, str):
@@ -297,6 +298,10 @@ class BeaconAIAgent:
             deps_type=BeaconDeps,
             retries=retries,
         )
+        self._register_dynamic_prompt()
+
+    def _register_dynamic_prompt(self) -> None:
+        """Register the dynamic system prompt and output validator on the agent."""
 
         @self._agent.system_prompt
         def dynamic_prompt(ctx: RunContext[BeaconDeps]) -> str:
@@ -321,10 +326,13 @@ class BeaconAIAgent:
                 parts.append(_build_history_section(ctx.deps.history))
 
             if ctx.deps.insights:
+                parts.append("EXPERT INSIGHTS:\n" + "\n".join(f"  - {insight}" for insight in ctx.deps.insights))
+
+            if self._code_execution:
                 parts.append(
-                    "EXPERT INSIGHTS (HIGH PRIORITY — you MUST acknowledge these in your journal and "
-                    "incorporate them into your experimental design):\n"
-                    + "\n".join(f"  - {insight}" for insight in ctx.deps.insights)
+                    "CODE EXECUTION: You can write and run Python scripts (Bash, Read, Write tools) "
+                    "to analyze experimental data — useful for statistical analysis, trend detection, "
+                    "and identifying non-obvious patterns."
                 )
 
             total_runs = len(ctx.deps.history)

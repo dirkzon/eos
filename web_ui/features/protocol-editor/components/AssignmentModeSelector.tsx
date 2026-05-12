@@ -14,6 +14,7 @@ export function AssignmentModeSelector({ mode, onChange, color = 'blue' }: Assig
         <button
           key={m}
           type="button"
+          tabIndex={-1}
           onClick={() => onChange(m)}
           className={`flex-1 min-w-0 px-1.5 py-1.5 text-xs font-medium rounded-md transition-colors capitalize truncate ${
             mode === m

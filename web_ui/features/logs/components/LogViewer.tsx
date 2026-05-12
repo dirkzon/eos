@@ -2,8 +2,11 @@
 
 import * as React from 'react';
 import { Trash2, Circle } from 'lucide-react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { Button } from '@/components/ui/Button';
 import { useLogStream, type LogEntry } from '@/hooks/useLogStream';
+
+const ROW_HEIGHT = 18;
 
 const LEVEL_COLORS: Record<string, string> = {
   DEBUG: 'text-cyan-600 dark:text-cyan-400',
@@ -43,17 +46,26 @@ export function LogViewer({ enabled = true, isResizing = false, className = '' }
 
   const { entries, connected, clear } = useLogStream({ level, enabled });
 
+  const virtualizer = useVirtualizer({
+    count: entries.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => ROW_HEIGHT,
+    overscan: 12,
+  });
+
   React.useEffect(() => {
-    if (autoScroll && scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    if (autoScroll && entries.length > 0) {
+      virtualizer.scrollToIndex(entries.length - 1, { align: 'end' });
     }
-  }, [entries, autoScroll]);
+  }, [entries.length, autoScroll, virtualizer]);
 
   const handleScroll = React.useCallback(() => {
     if (!scrollRef.current || isResizing) return;
     const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
     setAutoScroll(scrollHeight - scrollTop - clientHeight < 40);
   }, [isResizing]);
+
+  const items = virtualizer.getVirtualItems();
 
   return (
     <div className={`flex flex-col h-full bg-white dark:bg-slate-900 ${className}`}>
@@ -94,7 +106,26 @@ export function LogViewer({ enabled = true, isResizing = false, className = '' }
             {enabled ? 'Waiting for log entries...' : 'Log streaming disabled'}
           </div>
         ) : (
-          entries.map((entry, idx) => <LogLine key={`${entry.seq}-${idx}`} entry={entry} />)
+          <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
+            {items.map((virtualRow) => {
+              const entry = entries[virtualRow.index];
+              return (
+                <div
+                  key={virtualRow.key}
+                  data-index={virtualRow.index}
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    transform: `translateY(${virtualRow.start}px)`,
+                  }}
+                >
+                  <LogLine entry={entry} />
+                </div>
+              );
+            })}
+          </div>
         )}
       </div>
     </div>

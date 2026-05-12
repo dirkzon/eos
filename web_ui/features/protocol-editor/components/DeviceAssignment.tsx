@@ -94,6 +94,7 @@ export function DeviceAssignment({
               <button
                 key={mode}
                 type="button"
+                tabIndex={-1}
                 onClick={() => handleModeChange(mode)}
                 className={`px-1.5 py-1.5 text-xs font-medium rounded-md transition-colors capitalize ${
                   selectedMode === mode
@@ -305,7 +306,7 @@ function DynamicMode({
         emptyText="All devices added"
         renderItem={(d: DeviceIdentifier) => `${d.name} (${d.lab_name})`}
         getKey={(d: DeviceIdentifier) => `${d.lab_name}.${d.name}`}
-        color="green"
+        color="blue"
       />
     </div>
   );

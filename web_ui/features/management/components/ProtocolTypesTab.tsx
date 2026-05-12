@@ -9,6 +9,7 @@ import { ConfirmationDialog } from './dialogs/ConfirmationDialog';
 import { loadProtocolTypes, unloadProtocolTypes, reloadProtocolTypes } from '../api/protocolTypes';
 import type { ProtocolType } from '@/lib/types/management';
 import { useOrchestratorConnected } from '@/contexts/OrchestratorStatusContext';
+import { packageColumn } from './columns';
 
 interface ProtocolTypesTabProps {
   initialProtocolTypes: ProtocolType[];
@@ -26,6 +27,7 @@ export function ProtocolTypesTab({ initialProtocolTypes }: ProtocolTypesTabProps
       header: 'Protocol',
       cell: ({ row }) => <div className="font-medium">{row.getValue('name')}</div>,
     },
+    packageColumn<ProtocolType>(initialProtocolTypes),
     {
       accessorKey: 'loaded',
       header: 'Status',

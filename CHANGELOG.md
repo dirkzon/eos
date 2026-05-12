@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.27.0
+
+- Improved Beacon's AI agent system prompt
+- Improved Beacon's journal format and rendering
+- Improved EOS validation to catch errors in protocols where tasks reference outputs of later or parallel tasks
+- Improved visual protocol editor to prevent edge connections that would form cycles
+- Improved visual protocol editor to prevent edge connections that would cause tasks to reference outputs of later or parallel tasks
+- Added support for nested folders in the visual protocol editor package tree
+- Added automatic reloading of protocols and tasks when saving. Tasks only reload automatically if not actively used.
+- Added package columns to labs, tasks, and protocols in the system management page
+- Fixed visual protocol editor not updating task nodes after reloading tasks with updates
+- Fixed several other UI bugs
+- Fixed `eos ui` command not working on Windows
+- Improved the performance of some parts of the UI
+
 ## 0.26.0
 
 - Changed EOS identifiers to allow spaces in task names, protocol run names, etc

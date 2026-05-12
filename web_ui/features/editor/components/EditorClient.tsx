@@ -47,8 +47,9 @@ import { ToastContainer } from '@/components/ui/Toast';
 import { useToast } from '@/components/ui/useToast';
 import { ConflictDialog } from './ConflictDialog';
 import { useEditorStore } from '@/lib/stores/editorStore';
-import { hasJinjaSyntax, parseYaml, extractHoldsFromRawTasks } from '@/lib/utils/editor-utils';
+import { hasJinjaSyntax, parseYaml, extractHoldsFromRawTasks, entityBasename } from '@/lib/utils/editor-utils';
 import { refreshPackages } from '@/features/editor/api/refresh';
+import { reloadEntity } from '@/features/editor/api/reload';
 import { serializeCurrentProtocol } from '@/lib/utils/protocolSerializer';
 import { autoLayoutTasks } from '@/lib/utils/autoLayout';
 import type { Package, EntityTree, EntityFiles, EntityType } from '@/lib/types/filesystem';
@@ -79,9 +80,9 @@ function loadVisualEditor() {
   const { yaml, layout: layoutStr, python, selectedEntityName } = state;
 
   if (!yaml) {
-    // Empty file — bootstrap with entity name as type
-    const entityName = selectedEntityName || '';
-    useEditorStore.getState().loadProtocol({ type: entityName, desc: '', labs: [], tasks: [] });
+    // Empty file: bootstrap with entity basename as the protocol's YAML `type` field.
+    const typeName = entityBasename(selectedEntityName || '');
+    useEditorStore.getState().loadProtocol({ type: typeName, desc: '', labs: [], tasks: [] });
     // Clear history since this is a fresh load
     useEditorStore.setState({ past: [], future: [] });
     const { yaml: normalizedYaml, layoutJson: normalizedLayout } = serializeCurrentProtocol();
@@ -101,9 +102,10 @@ function loadVisualEditor() {
     ) as unknown as TaskNode[];
   }
 
-  // Ensure protocol type matches entity name
-  if (selectedEntityName && typedData.type !== selectedEntityName) {
-    typedData.type = selectedEntityName;
+  // Ensure protocol `type` field matches the entity's folder basename
+  const expectedType = entityBasename(selectedEntityName || '');
+  if (expectedType && typedData.type !== expectedType) {
+    typedData.type = expectedType;
   }
 
   // Parse layout or auto-layout
@@ -416,6 +418,11 @@ export function EditorClient({ initialPackages, taskSpecs, labSpecs, initialSele
 
         const data = await response.json();
         markSaved(data.mtime);
+        await refreshPackages();
+        await refreshSpecs();
+        if (selectedEntityType === 'tasks' || selectedEntityType === 'protocols') {
+          await reloadEntity(selectedEntityType, selectedEntityName, undefined, { ifUnused: true });
+        }
         showToast('success', 'Saved successfully');
       } catch (error) {
         console.error('Error saving files:', error);
@@ -425,7 +432,16 @@ export function EditorClient({ initialPackages, taskSpecs, labSpecs, initialSele
         setLoading(false);
       }
     },
-    [selectedPackage, selectedEntityType, selectedEntityName, setIsSaving, setLoading, markSaved, showToast]
+    [
+      selectedPackage,
+      selectedEntityType,
+      selectedEntityName,
+      setIsSaving,
+      setLoading,
+      markSaved,
+      refreshSpecs,
+      showToast,
+    ]
   );
 
   const refetchCurrentEntity = useCallback(() => {
@@ -548,10 +564,12 @@ export function EditorClient({ initialPackages, taskSpecs, labSpecs, initialSele
         useEditorStore.setState({ selectedEntityName: newName });
 
         if (entityType === 'protocols') {
-          useEditorStore.setState({ protocolType: newName });
+          // Orchestrator/YAML `type` is the folder basename, not the full nested path.
+          const newType = entityBasename(newName);
+          useEditorStore.setState({ protocolType: newType });
           const currentYaml = useEditorStore.getState().yaml;
           if (currentYaml) {
-            const updatedYaml = currentYaml.replace(/^type:\s*['"]?[^'"#\n]+['"]?/m, `type: ${newName}`);
+            const updatedYaml = currentYaml.replace(/^type:\s*['"]?[^'"#\n]+['"]?/m, `type: ${newType}`);
             useEditorStore.getState().updateYaml(updatedYaml);
           }
         }
@@ -568,12 +586,20 @@ export function EditorClient({ initialPackages, taskSpecs, labSpecs, initialSele
   };
 
   const handleRefreshPackages = useCallback(async () => {
+    // Tell the orchestrator to re-scan the filesystem and sync specs to the DB
+    // before refetching, so task/lab spec changes (renames, new types) propagate.
+    const result = await refreshPackages();
+    if (!result.success) {
+      showToast('error', result.error || 'Failed to refresh packages');
+      return;
+    }
     const packages = await fetchWithError<Package[]>('/api/filesystem/packages', 'Failed to refresh packages');
     if (packages) {
       setPackages(packages);
+      await refreshSpecs();
       showToast('success', `Refreshed: ${packages.length} package(s)`);
     }
-  }, [fetchWithError, setPackages, showToast]);
+  }, [fetchWithError, setPackages, showToast, refreshSpecs]);
 
   const handleToggleMode = useCallback(() => {
     const newMode = editorMode === 'code' ? 'visual' : 'code';

@@ -122,6 +122,7 @@ export function ProtocolRunParameterField({
           {hasOverride && (
             <button
               type="button"
+              tabIndex={-1}
               onClick={onClear}
               className="p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
               title="Reset to default"
@@ -133,6 +134,7 @@ export function ProtocolRunParameterField({
             <button
               key={mode}
               type="button"
+              tabIndex={-1}
               onClick={() => handleModeChange(mode)}
               className={`${MODE_BUTTON_BASE} ${selectedMode === mode ? MODE_BUTTON_ACTIVE : MODE_BUTTON_INACTIVE}`}
             >

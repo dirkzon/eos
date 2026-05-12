@@ -38,6 +38,7 @@ import { flattenInputParameters } from '@/lib/utils/paramGroups';
 import { EDITOR_LAYOUT, getEdgeColors } from '@/lib/constants/theme';
 import { performAutoLayout } from '../utils/autolayout';
 import { resolveOverlaps } from '../utils/preventOverlaps';
+import { isAncestor } from '../utils/dependencyGraph';
 
 const nodeTypes: NodeTypes = { taskNode: TaskNode };
 const GRID_SIZE = EDITOR_LAYOUT.gridSize;
@@ -329,6 +330,16 @@ export function ProtocolEditor() {
         return;
       }
 
+      // Source must be a transitive dependency of target (also rejects self-refs).
+      if (!isAncestor(taskMap, connection.target!, connection.source!)) {
+        showToast(
+          'error',
+          'Connection Error',
+          `Cannot connect: '${connection.target}' does not depend on '${connection.source}'. Add a dependency first.`
+        );
+        return;
+      }
+
       // Update task with reference
       updateTask(connection.target!, {
         [field]: { ...targetTask[field], [targetParam]: `${connection.source}.${sourceParam}` },
@@ -349,6 +360,14 @@ export function ProtocolEditor() {
 
       // Main dependency connection
       if (isMainDependencyConnection(sourceHandle, targetHandle)) {
+        if (connection.source === connection.target || isAncestor(taskMap, connection.source, connection.target)) {
+          showToast(
+            'error',
+            'Connection Error',
+            `Cannot connect: would create a dependency cycle ('${connection.source}' already depends on '${connection.target}').`
+          );
+          return;
+        }
         const targetTask = taskMap.get(connection.target);
         if (targetTask && !targetTask.dependencies?.includes(connection.source)) {
           updateTask(connection.target, { dependencies: [...(targetTask.dependencies || []), connection.source] });
@@ -491,6 +510,7 @@ export function ProtocolEditor() {
         devices: {},
         resources: {},
         parameters: {},
+        desc: template.desc,
       });
     },
     [newNodePosition, addTask, screenToFlowPosition, getNextTaskName]

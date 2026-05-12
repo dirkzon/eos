@@ -20,16 +20,19 @@ export interface DeviceReport {
 export interface Lab {
   name: string;
   loaded: boolean;
+  package: string;
 }
 
 export interface TaskPluginInfo {
   type: string;
   description?: string;
+  package: string;
 }
 
 export interface ProtocolType {
   name: string;
   loaded: boolean;
+  package: string;
 }
 
 export interface PackageInfo {

@@ -43,14 +43,29 @@ export function useLogStream(options: UseLogStreamOptions = {}) {
     const es = new EventSource(url);
     eventSourceRef.current = es;
 
+    // Batch incoming events so a burst yields one render per animation frame
+    // instead of one per entry.
+    let pending: LogEntry[] = [];
+    let rafId: number | null = null;
+
+    const flush = () => {
+      rafId = null;
+      if (pending.length === 0) return;
+      const batch = pending;
+      pending = [];
+      setEntries((prev) => {
+        const next =
+          prev.length + batch.length > maxEntries ? [...prev, ...batch].slice(-maxEntries) : [...prev, ...batch];
+        return next;
+      });
+    };
+
     es.onopen = () => setConnected(true);
 
     es.addEventListener('log', (event) => {
       const entry: LogEntry = JSON.parse(event.data);
-      setEntries((prev) => {
-        const next = [...prev, entry];
-        return next.length > maxEntries ? next.slice(-maxEntries) : next;
-      });
+      pending.push(entry);
+      if (rafId === null) rafId = requestAnimationFrame(flush);
     });
 
     es.onerror = () => {
@@ -58,6 +73,8 @@ export function useLogStream(options: UseLogStreamOptions = {}) {
     };
 
     return () => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      pending = [];
       es.close();
       setConnected(false);
     };

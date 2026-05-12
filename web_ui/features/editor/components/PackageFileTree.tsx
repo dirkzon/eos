@@ -5,6 +5,8 @@ import {
   ChevronRight,
   ChevronDown,
   FileCode,
+  Folder,
+  FolderOpen,
   Plus,
   Trash2,
   Search,
@@ -18,16 +20,20 @@ import {
   Microscope,
 } from 'lucide-react';
 import { useEditorStore } from '@/lib/stores/editorStore';
-import { getEntityColor, validateEntityName } from '@/lib/utils/editor-utils';
+import { entityBasename, getEntityColor, validateEntityName } from '@/lib/utils/editor-utils';
 import { ConfirmationDialog } from '@/features/management/components/dialogs/ConfirmationDialog';
 import { useDebouncedValue } from '@/hooks/useDebouncedValue';
 import { TIMING } from '@/lib/constants/theme';
-import type { Package, EntityType, EntityNode, EntityTree } from '@/lib/types/filesystem';
+import type { Package, EntityType, EntityLeafNode, FolderNode, TreeNode, EntityTree } from '@/lib/types/filesystem';
 
 const EXPANDED_PACKAGES_KEY = 'eos-editor-expanded-packages';
 const EXPANDED_ENTITY_TYPES_KEY = 'eos-editor-expanded-entity-types';
+const EXPANDED_FOLDERS_KEY = 'eos-editor-expanded-folders';
 
-// Simple localStorage helpers
+// Indent step per nesting level, in pixels.
+const INDENT_PX = 12;
+const BASE_INDENT_PX = 8;
+
 const loadExpandedState = (key: string): Set<string> => {
   if (typeof window === 'undefined') return new Set();
   try {
@@ -46,7 +52,56 @@ const saveExpandedState = (key: string, state: Set<string>): void => {
   }
 };
 
-type FilteredPackage = { pkg: Package; matchingTypes: Partial<Record<EntityType, EntityNode[]>> };
+// Unique identifier for any node in the tree, used for selection compares,
+// cache keys, and the expandedFolders set.
+const nodeKey = (pkg: string, type: EntityType, p: string) => `${pkg}/${type}/${p}`;
+
+// Path-segment join that handles the empty-parent case cleanly.
+const joinPath = (parent: string, child: string) => (parent ? `${parent}/${child}` : child);
+
+const dirOf = (p: string): string => {
+  const i = p.lastIndexOf('/');
+  return i < 0 ? '' : p.slice(0, i);
+};
+
+// Walks from `p` upward, yielding nodeKeys for `p` itself (if non-empty) and every ancestor folder.
+function selfAndAncestorKeys(pkg: string, type: EntityType, p: string): string[] {
+  const keys: string[] = [];
+  let cur = p;
+  while (cur) {
+    keys.push(nodeKey(pkg, type, cur));
+    cur = dirOf(cur);
+  }
+  return keys;
+}
+
+// Adds keys to a Set; returns the same Set reference when nothing changed
+// so React's setState can short-circuit downstream renders.
+function addKeysIfChanged(prev: Set<string>, keys: Iterable<string>): Set<string> {
+  let next: Set<string> | null = null;
+  for (const k of keys) {
+    if (prev.has(k)) continue;
+    if (!next) next = new Set(prev);
+    next.add(k);
+  }
+  return next ?? prev;
+}
+
+// Prune a tree to ancestors of any leaf whose path matches the query.
+function filterTree(nodes: TreeNode[], lowerQuery: string): TreeNode[] {
+  const out: TreeNode[] = [];
+  for (const node of nodes) {
+    if (node.kind === 'entity') {
+      if (node.path.toLowerCase().includes(lowerQuery)) out.push(node);
+    } else {
+      const kept = filterTree(node.children, lowerQuery);
+      if (kept.length > 0) out.push({ ...node, children: kept });
+    }
+  }
+  return out;
+}
+
+type FilteredPackage = { pkg: Package; matchingTrees: Partial<Record<EntityType, TreeNode[]>> };
 
 const ENTITY_TYPE_LABELS: Record<EntityType, string> = {
   devices: 'Devices',
@@ -72,52 +127,92 @@ function hasEntities(pkg: Package, type: EntityType): boolean {
   return false;
 }
 
-// --- Sub-components ---
-
-interface EntityItemProps {
-  entity: EntityNode;
+// Shared state + handlers passed down through the tree, in lieu of prop drilling
+// dozens of individual callbacks through every recursion level.
+interface TreeContext {
   packageName: string;
   entityType: EntityType;
-  isSelected: boolean;
-  hasUnsaved: boolean;
-  isRenaming: boolean;
+  cache: Record<string, unknown>;
+  isSearching: boolean;
+  selectedEntityType: EntityType | null;
+  selectedEntityName: string | null;
+  expandedFolders: Set<string>;
+  renamingEntity: { packageName: string; entityType: EntityType; oldPath: string } | null;
   renameValue: string;
+  creatingEntity: { packageName: string; entityType: EntityType; parentPath: string } | null;
+  newEntityName: string;
+  onToggleFolder: (key: string) => void;
+  onCreateStart: (packageName: string, entityType: EntityType, parentPath: string) => void;
+  onCreateConfirm: () => void;
+  onCreateCancel: () => void;
+  onNewEntityNameChange: (value: string) => void;
   onRenameValueChange: (value: string) => void;
   onRenameConfirm: () => void;
   onRenameCancel: () => void;
-  onClick: (packageName: string, entityType: EntityType, entityName: string) => void;
-  onContextMenu: (e: React.MouseEvent, packageName: string, entityType: EntityType, entityName: string) => void;
-  onDeleteRequest: (packageName: string, entityType: EntityType, entityName: string) => void;
+  onEntityClick: (packageName: string, entityType: EntityType, entityPath: string) => void;
+  onContextMenu: (e: React.MouseEvent, packageName: string, entityType: EntityType, entityPath?: string) => void;
+  onDeleteRequest: (packageName: string, entityType: EntityType, entityPath: string) => void;
 }
 
-function EntityItem({
-  entity,
-  packageName,
-  entityType,
-  isSelected,
-  hasUnsaved,
-  isRenaming,
-  renameValue,
-  onRenameValueChange,
-  onRenameConfirm,
-  onRenameCancel,
-  onClick,
-  onContextMenu,
-  onDeleteRequest,
-}: EntityItemProps) {
+// --- Inline create input -----------------------------------------------------
+
+interface CreateInputProps {
+  depth: number;
+  value: string;
+  onChange: (v: string) => void;
+  onConfirm: () => void;
+  onCancel: () => void;
+}
+
+function CreateInput({ depth, value, onChange, onConfirm, onCancel }: CreateInputProps) {
+  return (
+    <div className="flex items-center gap-1 py-1 pr-2" style={{ paddingLeft: depth * INDENT_PX + BASE_INDENT_PX }}>
+      <FileCode className="w-3 h-3 text-gray-400 flex-shrink-0" />
+      <input
+        type="text"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') onConfirm();
+          if (e.key === 'Escape') onCancel();
+        }}
+        onBlur={onCancel}
+        placeholder="entity_name"
+        className="text-xs flex-1 px-1 py-0.5 border border-blue-500 dark:border-yellow-500 rounded bg-white dark:bg-gray-800 min-w-0"
+        autoFocus
+      />
+    </div>
+  );
+}
+
+// --- Entity (leaf) row -------------------------------------------------------
+
+interface EntityItemProps {
+  entity: EntityLeafNode;
+  depth: number;
+  ctx: TreeContext;
+}
+
+function EntityItem({ entity, depth, ctx }: EntityItemProps) {
+  const isRenaming =
+    ctx.renamingEntity &&
+    ctx.renamingEntity.packageName === ctx.packageName &&
+    ctx.renamingEntity.entityType === ctx.entityType &&
+    ctx.renamingEntity.oldPath === entity.path;
+
   if (isRenaming) {
     return (
-      <div className="flex items-center gap-1 px-2 py-1">
+      <div className="flex items-center gap-1 py-1 pr-2" style={{ paddingLeft: depth * INDENT_PX + BASE_INDENT_PX }}>
         <FileCode className="w-3 h-3 text-gray-400 flex-shrink-0" />
         <input
           type="text"
-          value={renameValue}
-          onChange={(e) => onRenameValueChange(e.target.value)}
+          value={ctx.renameValue}
+          onChange={(e) => ctx.onRenameValueChange(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter') onRenameConfirm();
-            if (e.key === 'Escape') onRenameCancel();
+            if (e.key === 'Enter') ctx.onRenameConfirm();
+            if (e.key === 'Escape') ctx.onRenameCancel();
           }}
-          onBlur={onRenameCancel}
+          onBlur={ctx.onRenameCancel}
           placeholder="entity_name"
           className="text-xs flex-1 px-1 py-0.5 border border-blue-500 dark:border-yellow-500 rounded bg-white dark:bg-gray-800 min-w-0"
           autoFocus
@@ -126,13 +221,18 @@ function EntityItem({
     );
   }
 
+  const cacheKey = nodeKey(ctx.packageName, ctx.entityType, entity.path);
+  const hasUnsaved = cacheKey in ctx.cache;
+  const isSelected = ctx.selectedEntityType === ctx.entityType && ctx.selectedEntityName === entity.path;
+
   return (
     <div
-      className={`flex items-center gap-1 px-2 py-1 rounded cursor-pointer group ${
+      className={`flex items-center gap-1 py-1 pr-2 rounded cursor-pointer group ${
         isSelected ? 'bg-blue-100 dark:bg-yellow-900' : 'hover:bg-gray-100 dark:hover:bg-gray-800'
       }`}
-      onClick={() => onClick(packageName, entityType, entity.name)}
-      onContextMenu={(e) => onContextMenu(e, packageName, entityType, entity.name)}
+      style={{ paddingLeft: depth * INDENT_PX + BASE_INDENT_PX }}
+      onClick={() => ctx.onEntityClick(ctx.packageName, ctx.entityType, entity.path)}
+      onContextMenu={(e) => ctx.onContextMenu(e, ctx.packageName, ctx.entityType, entity.path)}
     >
       <FileCode className="w-3 h-3 text-gray-500 flex-shrink-0" />
       <span className="text-sm flex-1 flex items-center gap-1 min-w-0">
@@ -147,7 +247,7 @@ function EntityItem({
       <button
         onClick={(e) => {
           e.stopPropagation();
-          onDeleteRequest(packageName, entityType, entity.name);
+          ctx.onDeleteRequest(ctx.packageName, ctx.entityType, entity.path);
         }}
         className="p-0.5 opacity-0 group-hover:opacity-100 hover:bg-red-100 dark:hover:bg-red-900 rounded flex-shrink-0"
         title="Delete"
@@ -158,63 +258,103 @@ function EntityItem({
   );
 }
 
-interface EntityTypeSectionProps {
-  packageName: string;
-  entityType: EntityType;
-  entities: EntityNode[];
-  isExpanded: boolean;
-  cache: Record<string, unknown>;
-  selectedEntityType: EntityType | null;
-  selectedEntityName: string | null;
-  renamingEntity: { packageName: string; entityType: EntityType; oldName: string } | null;
-  renameValue: string;
-  creatingEntity: { packageName: string; entityType: EntityType } | null;
-  newEntityName: string;
-  onToggle: (key: string) => void;
-  onCreateStart: (packageName: string, entityType: EntityType) => void;
-  onCreateConfirm: () => void;
-  onCreateCancel: () => void;
-  onNewEntityNameChange: (value: string) => void;
-  onRenameValueChange: (value: string) => void;
-  onRenameConfirm: () => void;
-  onRenameCancel: () => void;
-  onEntityClick: (packageName: string, entityType: EntityType, entityName: string) => void;
-  onContextMenu: (e: React.MouseEvent, packageName: string, entityType: EntityType, entityName: string) => void;
-  onDeleteRequest: (packageName: string, entityType: EntityType, entityName: string) => void;
+// --- Folder row + recursive children ----------------------------------------
+
+interface FolderItemProps {
+  folder: FolderNode;
+  depth: number;
+  ctx: TreeContext;
 }
 
-function EntityTypeSection({
-  packageName,
-  entityType,
-  entities,
-  isExpanded,
-  cache,
-  selectedEntityType,
-  selectedEntityName,
-  renamingEntity,
-  renameValue,
-  creatingEntity,
-  newEntityName,
-  onToggle,
-  onCreateStart,
-  onCreateConfirm,
-  onCreateCancel,
-  onNewEntityNameChange,
-  onRenameValueChange,
-  onRenameConfirm,
-  onRenameCancel,
-  onEntityClick,
-  onContextMenu,
-  onDeleteRequest,
-}: EntityTypeSectionProps) {
-  const typeKey = `${packageName}-${entityType}`;
+function FolderItem({ folder, depth, ctx }: FolderItemProps) {
+  const key = nodeKey(ctx.packageName, ctx.entityType, folder.path);
+  const isExpanded = ctx.isSearching || ctx.expandedFolders.has(key);
+  const isCreatingHere =
+    ctx.creatingEntity &&
+    ctx.creatingEntity.packageName === ctx.packageName &&
+    ctx.creatingEntity.entityType === ctx.entityType &&
+    ctx.creatingEntity.parentPath === folder.path;
+
+  return (
+    <>
+      <div
+        className="flex items-center gap-1 py-1 pr-2 rounded hover:bg-gray-100 dark:hover:bg-gray-800 cursor-pointer group"
+        style={{ paddingLeft: depth * INDENT_PX + BASE_INDENT_PX }}
+        onClick={() => ctx.onToggleFolder(key)}
+      >
+        {isExpanded ? (
+          <ChevronDown className="w-3 h-3 flex-shrink-0" />
+        ) : (
+          <ChevronRight className="w-3 h-3 flex-shrink-0" />
+        )}
+        {isExpanded ? (
+          <FolderOpen className="w-3.5 h-3.5 text-gray-500 flex-shrink-0" />
+        ) : (
+          <Folder className="w-3.5 h-3.5 text-gray-500 flex-shrink-0" />
+        )}
+        <span className="text-sm flex-1 truncate">{folder.name}</span>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            ctx.onCreateStart(ctx.packageName, ctx.entityType, folder.path);
+          }}
+          className="p-0.5 opacity-0 group-hover:opacity-100 hover:bg-gray-200 dark:hover:bg-gray-700 rounded flex-shrink-0"
+          title="Create new in this folder"
+        >
+          <Plus className="w-3.5 h-3.5" />
+        </button>
+      </div>
+      {isExpanded && (
+        <>
+          {folder.children.map((child) => (
+            <TreeNodeView key={child.path} node={child} depth={depth + 1} ctx={ctx} />
+          ))}
+          {isCreatingHere && (
+            <CreateInput
+              depth={depth + 1}
+              value={ctx.newEntityName}
+              onChange={ctx.onNewEntityNameChange}
+              onConfirm={ctx.onCreateConfirm}
+              onCancel={ctx.onCreateCancel}
+            />
+          )}
+        </>
+      )}
+    </>
+  );
+}
+
+function TreeNodeView({ node, depth, ctx }: { node: TreeNode; depth: number; ctx: TreeContext }) {
+  if (node.kind === 'entity') {
+    return <EntityItem entity={node} depth={depth} ctx={ctx} />;
+  }
+  return <FolderItem folder={node} depth={depth} ctx={ctx} />;
+}
+
+// --- Entity-type section (root of each entity kind in a package) ------------
+
+interface EntityTypeSectionProps {
+  entityType: EntityType;
+  nodes: TreeNode[];
+  isExpanded: boolean;
+  onToggle: (key: string) => void;
+  ctx: TreeContext;
+}
+
+function EntityTypeSection({ entityType, nodes, isExpanded, onToggle, ctx }: EntityTypeSectionProps) {
+  const typeKey = `${ctx.packageName}-${entityType}`;
+  const effectiveExpanded = ctx.isSearching || isExpanded;
+  const isCreatingAtRoot =
+    ctx.creatingEntity &&
+    ctx.creatingEntity.packageName === ctx.packageName &&
+    ctx.creatingEntity.entityType === entityType &&
+    ctx.creatingEntity.parentPath === '';
 
   return (
     <div className="mb-1">
-      {/* Entity Type Header */}
       <div className="flex items-center gap-1 px-2 py-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800 group">
         <div className="flex-1 flex items-center gap-1 cursor-pointer min-w-0" onClick={() => onToggle(typeKey)}>
-          {isExpanded ? (
+          {effectiveExpanded ? (
             <ChevronDown className="w-3 h-3 flex-shrink-0" />
           ) : (
             <ChevronRight className="w-3 h-3 flex-shrink-0" />
@@ -223,131 +363,62 @@ function EntityTypeSection({
           <span className={`text-sm ${getEntityColor(entityType)} truncate`}>{ENTITY_TYPE_LABELS[entityType]}</span>
         </div>
         <button
-          onClick={() => onCreateStart(packageName, entityType)}
+          onClick={() => ctx.onCreateStart(ctx.packageName, entityType, '')}
           className="p-0.5 hover:bg-gray-200 dark:hover:bg-gray-700 rounded opacity-0 group-hover:opacity-100 flex-shrink-0"
           title="Create new"
         >
           <Plus className="w-3.5 h-3.5" />
         </button>
       </div>
-
-      {/* Entities */}
-      {isExpanded && (
-        <div className="ml-4">
-          {entities.map((entity: EntityNode) => {
-            const cacheKey = `${packageName}/${entityType}/${entity.name}`;
-            const hasUnsaved = cacheKey in cache;
-            const isRenaming =
-              renamingEntity &&
-              renamingEntity.packageName === packageName &&
-              renamingEntity.entityType === entityType &&
-              renamingEntity.oldName === entity.name;
-
-            return (
-              <EntityItem
-                key={entity.name}
-                entity={entity}
-                packageName={packageName}
-                entityType={entityType}
-                isSelected={selectedEntityType === entityType && selectedEntityName === entity.name}
-                hasUnsaved={hasUnsaved}
-                isRenaming={!!isRenaming}
-                renameValue={renameValue}
-                onRenameValueChange={onRenameValueChange}
-                onRenameConfirm={onRenameConfirm}
-                onRenameCancel={onRenameCancel}
-                onClick={onEntityClick}
-                onContextMenu={onContextMenu}
-                onDeleteRequest={onDeleteRequest}
-              />
-            );
-          })}
-
-          {/* Create Entity Inline */}
-          {creatingEntity && creatingEntity.packageName === packageName && creatingEntity.entityType === entityType && (
-            <div className="flex items-center gap-1 px-2 py-1">
-              <FileCode className="w-3 h-3 text-gray-400 flex-shrink-0" />
-              <input
-                type="text"
-                value={newEntityName}
-                onChange={(e) => onNewEntityNameChange(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') onCreateConfirm();
-                  if (e.key === 'Escape') onCreateCancel();
-                }}
-                onBlur={onCreateCancel}
-                placeholder="entity_name"
-                className="text-xs flex-1 px-1 py-0.5 border border-blue-500 dark:border-yellow-500 rounded bg-white dark:bg-gray-800 min-w-0"
-                autoFocus
-              />
-            </div>
+      {effectiveExpanded && (
+        <>
+          {nodes.map((node) => (
+            <TreeNodeView key={node.path} node={node} depth={1} ctx={ctx} />
+          ))}
+          {isCreatingAtRoot && (
+            <CreateInput
+              depth={1}
+              value={ctx.newEntityName}
+              onChange={ctx.onNewEntityNameChange}
+              onConfirm={ctx.onCreateConfirm}
+              onCancel={ctx.onCreateCancel}
+            />
           )}
-        </div>
+        </>
       )}
     </div>
   );
 }
 
+// --- Package ----------------------------------------------------------------
+
 interface PackageNodeProps {
   pkg: Package;
-  matchingTypes: Partial<Record<EntityType, EntityNode[]>>;
+  matchingTrees: Partial<Record<EntityType, TreeNode[]>>;
   isExpanded: boolean;
   isSearching: boolean;
   expandedEntityTypes: Set<string>;
-  cache: Record<string, unknown>;
-  selectedEntityType: EntityType | null;
-  selectedEntityName: string | null;
-  renamingEntity: { packageName: string; entityType: EntityType; oldName: string } | null;
-  renameValue: string;
-  creatingEntity: { packageName: string; entityType: EntityType } | null;
-  newEntityName: string;
   entityTrees: Record<string, EntityTree>;
   onTogglePackage: (packageName: string) => void;
   onToggleEntityType: (key: string) => void;
-  onCreateStart: (packageName: string, entityType: EntityType) => void;
-  onCreateConfirm: () => void;
-  onCreateCancel: () => void;
-  onNewEntityNameChange: (value: string) => void;
-  onRenameValueChange: (value: string) => void;
-  onRenameConfirm: () => void;
-  onRenameCancel: () => void;
-  onEntityClick: (packageName: string, entityType: EntityType, entityName: string) => void;
-  onContextMenu: (e: React.MouseEvent, packageName: string, entityType: EntityType, entityName?: string) => void;
-  onDeleteRequest: (packageName: string, entityType: EntityType, entityName: string) => void;
+  makeCtx: (packageName: string, entityType: EntityType) => TreeContext;
 }
 
 function PackageNode({
   pkg,
-  matchingTypes,
+  matchingTrees,
   isExpanded,
   isSearching,
   expandedEntityTypes,
-  cache,
-  selectedEntityType,
-  selectedEntityName,
-  renamingEntity,
-  renameValue,
-  creatingEntity,
-  newEntityName,
   entityTrees,
   onTogglePackage,
   onToggleEntityType,
-  onCreateStart,
-  onCreateConfirm,
-  onCreateCancel,
-  onNewEntityNameChange,
-  onRenameValueChange,
-  onRenameConfirm,
-  onRenameCancel,
-  onEntityClick,
-  onContextMenu,
-  onDeleteRequest,
+  makeCtx,
 }: PackageNodeProps) {
   const entityTree = isExpanded ? entityTrees[pkg.name] : null;
 
   return (
     <div className="mb-1">
-      {/* Package Header */}
       <div
         className="flex items-center gap-1 px-2 py-1.5 rounded hover:bg-gray-100 dark:hover:bg-gray-800 cursor-pointer"
         onClick={() => onTogglePackage(pkg.name)}
@@ -361,48 +432,24 @@ function PackageNode({
         <span className="text-sm font-medium min-w-0 truncate">{pkg.name}</span>
       </div>
 
-      {/* Entity Types */}
       {isExpanded && entityTree && (
         <div className="ml-4">
           {ENTITY_TYPE_KEYS.map((entityType) => {
             if (!hasEntities(pkg, entityType)) return null;
 
-            const entities =
-              isSearching && matchingTypes[entityType]
-                ? matchingTypes[entityType]
-                : isSearching
-                  ? []
-                  : entityTree[entityType] || [];
-
-            if (isSearching && entities.length === 0) return null;
+            const nodes = isSearching ? (matchingTrees[entityType] ?? []) : (entityTree[entityType] ?? []);
+            if (isSearching && nodes.length === 0) return null;
 
             const typeKey = `${pkg.name}-${entityType}`;
 
             return (
               <EntityTypeSection
                 key={entityType}
-                packageName={pkg.name}
                 entityType={entityType}
-                entities={entities}
+                nodes={nodes}
                 isExpanded={expandedEntityTypes.has(typeKey)}
-                cache={cache}
-                selectedEntityType={selectedEntityType}
-                selectedEntityName={selectedEntityName}
-                renamingEntity={renamingEntity}
-                renameValue={renameValue}
-                creatingEntity={creatingEntity}
-                newEntityName={newEntityName}
                 onToggle={onToggleEntityType}
-                onCreateStart={onCreateStart}
-                onCreateConfirm={onCreateConfirm}
-                onCreateCancel={onCreateCancel}
-                onNewEntityNameChange={onNewEntityNameChange}
-                onRenameValueChange={onRenameValueChange}
-                onRenameConfirm={onRenameConfirm}
-                onRenameCancel={onRenameCancel}
-                onEntityClick={onEntityClick}
-                onContextMenu={onContextMenu}
-                onDeleteRequest={onDeleteRequest}
+                ctx={makeCtx(pkg.name, entityType)}
               />
             );
           })}
@@ -412,7 +459,7 @@ function PackageNode({
   );
 }
 
-// --- Main component ---
+// --- Main component ---------------------------------------------------------
 
 interface PackageFileTreeProps {
   onCreateEntity: (packageName: string, entityType: EntityType, entityName: string) => void;
@@ -441,12 +488,17 @@ export function PackageFileTree({
   const [expandedEntityTypes, setExpandedEntityTypes] = useState<Set<string>>(() =>
     loadExpandedState(EXPANDED_ENTITY_TYPES_KEY)
   );
-  const [creatingEntity, setCreatingEntity] = useState<{ packageName: string; entityType: EntityType } | null>(null);
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => loadExpandedState(EXPANDED_FOLDERS_KEY));
+  const [creatingEntity, setCreatingEntity] = useState<{
+    packageName: string;
+    entityType: EntityType;
+    parentPath: string;
+  } | null>(null);
   const [newEntityName, setNewEntityName] = useState('');
   const [renamingEntity, setRenamingEntity] = useState<{
     packageName: string;
     entityType: EntityType;
-    oldName: string;
+    oldPath: string;
   } | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
@@ -455,174 +507,178 @@ export function PackageFileTree({
     y: number;
     packageName: string;
     entityType: EntityType;
-    entityName?: string;
+    entityPath?: string;
   } | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<{
     packageName: string;
     entityType: EntityType;
-    entityName: string;
+    entityPath: string;
   } | null>(null);
 
   const debouncedQuery = useDebouncedValue(searchQuery, TIMING.debounceDelay);
 
-  // Save expanded packages to localStorage
   useEffect(() => {
     saveExpandedState(EXPANDED_PACKAGES_KEY, expandedPackages);
   }, [expandedPackages]);
 
-  // Save expanded entity types to localStorage
   useEffect(() => {
     saveExpandedState(EXPANDED_ENTITY_TYPES_KEY, expandedEntityTypes);
   }, [expandedEntityTypes]);
 
-  // Auto-expand package and entity type when entity is selected
   useEffect(() => {
-    if (selectedPackage && selectedEntityType) {
-      setExpandedPackages((prev) => {
-        if (!prev.has(selectedPackage)) {
-          return new Set([...prev, selectedPackage]);
-        }
-        return prev;
-      });
+    saveExpandedState(EXPANDED_FOLDERS_KEY, expandedFolders);
+  }, [expandedFolders]);
 
-      const typeKey = `${selectedPackage}-${selectedEntityType}`;
-      setExpandedEntityTypes((prev) => {
-        if (!prev.has(typeKey)) {
-          return new Set([...prev, typeKey]);
-        }
-        return prev;
-      });
+  // Auto-expand package, entity type, and every ancestor folder of the selected entity.
+  useEffect(() => {
+    if (!selectedPackage || !selectedEntityType || !selectedEntityName) return;
+
+    setExpandedPackages((prev) => (prev.has(selectedPackage) ? prev : new Set([...prev, selectedPackage])));
+
+    const typeKey = `${selectedPackage}-${selectedEntityType}`;
+    setExpandedEntityTypes((prev) => (prev.has(typeKey) ? prev : new Set([...prev, typeKey])));
+
+    const ancestorKeys = selfAndAncestorKeys(selectedPackage, selectedEntityType, dirOf(selectedEntityName));
+    if (ancestorKeys.length > 0) {
+      setExpandedFolders((prev) => addKeysIfChanged(prev, ancestorKeys));
     }
-  }, [selectedPackage, selectedEntityType]);
+  }, [selectedPackage, selectedEntityType, selectedEntityName]);
 
-  // Fetch entity trees for all packages on mount
+  // Fetch entity trees for all packages on mount; auto-expand all packages if none persisted.
   useEffect(() => {
     Promise.all(packages.map((pkg) => onPackageExpand(pkg.name))).then(() => {
-      // Auto-expand packages if none are expanded
-      setExpandedPackages((prev) => {
-        if (prev.size === 0) {
-          return new Set(packages.map((p) => p.name));
-        }
-        return prev;
-      });
+      setExpandedPackages((prev) => (prev.size === 0 ? new Set(packages.map((p) => p.name)) : prev));
     });
   }, [packages, onPackageExpand]);
 
   const togglePackage = useCallback(
     (packageName: string) => {
-      const newExpanded = new Set(expandedPackages);
-      if (newExpanded.has(packageName)) {
-        newExpanded.delete(packageName);
-      } else {
-        newExpanded.add(packageName);
-        onPackageExpand(packageName);
-      }
-      setExpandedPackages(newExpanded);
+      setExpandedPackages((prev) => {
+        const next = new Set(prev);
+        if (next.has(packageName)) {
+          next.delete(packageName);
+        } else {
+          next.add(packageName);
+          onPackageExpand(packageName);
+        }
+        return next;
+      });
     },
-    [expandedPackages, onPackageExpand]
+    [onPackageExpand]
   );
 
-  const toggleEntityType = useCallback(
-    (key: string) => {
-      const newExpanded = new Set(expandedEntityTypes);
-      if (newExpanded.has(key)) {
-        newExpanded.delete(key);
-      } else {
-        newExpanded.add(key);
-      }
-      setExpandedEntityTypes(newExpanded);
-    },
-    [expandedEntityTypes]
-  );
+  const toggleEntityType = useCallback((key: string) => {
+    setExpandedEntityTypes((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const toggleFolder = useCallback((key: string) => {
+    setExpandedFolders((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
 
   const handleEntityClick = useCallback(
-    (packageName: string, entityType: EntityType, entityName: string) => {
-      if (selectedPackage === packageName && selectedEntityType === entityType && selectedEntityName === entityName) {
+    (packageName: string, entityType: EntityType, entityPath: string) => {
+      if (selectedPackage === packageName && selectedEntityType === entityType && selectedEntityName === entityPath) {
         return;
       }
-      selectEntity(packageName, entityType, entityName);
+      selectEntity(packageName, entityType, entityPath);
     },
     [selectEntity, selectedPackage, selectedEntityType, selectedEntityName]
   );
 
-  const handleCreateEntityStart = useCallback((packageName: string, entityType: EntityType) => {
+  const handleCreateEntityStart = useCallback((packageName: string, entityType: EntityType, parentPath: string) => {
+    // Make sure the section/folder hosting the input is open so the input is visible.
     const typeKey = `${packageName}-${entityType}`;
-    setExpandedEntityTypes((prev) => {
-      if (prev.has(typeKey)) return prev;
-      return new Set([...prev, typeKey]);
-    });
-    setCreatingEntity({ packageName, entityType });
+    setExpandedEntityTypes((prev) => (prev.has(typeKey) ? prev : new Set([...prev, typeKey])));
+    if (parentPath) {
+      const keys = selfAndAncestorKeys(packageName, entityType, parentPath);
+      setExpandedFolders((prev) => addKeysIfChanged(prev, keys));
+    }
+    setCreatingEntity({ packageName, entityType, parentPath });
     setNewEntityName('');
     setContextMenu(null);
   }, []);
 
   const handleCreateEntityConfirm = useCallback(() => {
-    if (creatingEntity && newEntityName) {
-      const validation = validateEntityName(newEntityName);
-      if (!validation.valid) {
-        alert(validation.error);
-        return;
-      }
-      onCreateEntity(creatingEntity.packageName, creatingEntity.entityType, newEntityName);
-      setCreatingEntity(null);
-      setNewEntityName('');
+    if (!creatingEntity || !newEntityName) return;
+    const validation = validateEntityName(newEntityName);
+    if (!validation.valid) {
+      alert(validation.error);
+      return;
     }
+    const fullPath = joinPath(creatingEntity.parentPath, newEntityName);
+    onCreateEntity(creatingEntity.packageName, creatingEntity.entityType, fullPath);
+    setCreatingEntity(null);
+    setNewEntityName('');
   }, [creatingEntity, newEntityName, onCreateEntity]);
 
-  const handleCreateCancel = useCallback(() => {
-    setCreatingEntity(null);
-  }, []);
+  const handleCreateCancel = useCallback(() => setCreatingEntity(null), []);
 
   const handleContextMenu = useCallback(
-    (e: React.MouseEvent, packageName: string, entityType: EntityType, entityName?: string) => {
+    (e: React.MouseEvent, packageName: string, entityType: EntityType, entityPath?: string) => {
       e.preventDefault();
-      setContextMenu({ x: e.clientX, y: e.clientY, packageName, entityType, entityName });
+      setContextMenu({ x: e.clientX, y: e.clientY, packageName, entityType, entityPath });
     },
     []
   );
 
   const handleDeleteFromContext = useCallback(() => {
-    if (contextMenu && contextMenu.entityName) {
+    if (contextMenu && contextMenu.entityPath) {
       setDeleteTarget({
         packageName: contextMenu.packageName,
         entityType: contextMenu.entityType,
-        entityName: contextMenu.entityName,
+        entityPath: contextMenu.entityPath,
       });
       setDeleteDialogOpen(true);
     }
     setContextMenu(null);
   }, [contextMenu]);
 
-  const handleDeleteRequest = useCallback((packageName: string, entityType: EntityType, entityName: string) => {
-    setDeleteTarget({ packageName, entityType, entityName });
+  const handleDeleteRequest = useCallback((packageName: string, entityType: EntityType, entityPath: string) => {
+    setDeleteTarget({ packageName, entityType, entityPath });
     setDeleteDialogOpen(true);
   }, []);
 
   const handleRenameStart = useCallback(() => {
-    if (contextMenu && contextMenu.entityName) {
+    if (contextMenu && contextMenu.entityPath) {
       setRenamingEntity({
         packageName: contextMenu.packageName,
         entityType: contextMenu.entityType,
-        oldName: contextMenu.entityName,
+        oldPath: contextMenu.entityPath,
       });
-      setRenameValue(contextMenu.entityName);
+      setRenameValue(entityBasename(contextMenu.entityPath));
       setContextMenu(null);
     }
   }, [contextMenu]);
 
   const handleRenameConfirm = useCallback(() => {
-    if (renamingEntity && renameValue && renameValue !== renamingEntity.oldName) {
-      const validation = validateEntityName(renameValue);
-      if (!validation.valid) {
-        alert(validation.error);
-        return;
-      }
-      onRenameEntity(renamingEntity.packageName, renamingEntity.entityType, renamingEntity.oldName, renameValue);
+    if (!renamingEntity || !renameValue) return;
+    const basename = entityBasename(renamingEntity.oldPath);
+    if (renameValue === basename) {
       setRenamingEntity(null);
       setRenameValue('');
+      return;
     }
+    const validation = validateEntityName(renameValue);
+    if (!validation.valid) {
+      alert(validation.error);
+      return;
+    }
+    const newPath = joinPath(dirOf(renamingEntity.oldPath), renameValue);
+    onRenameEntity(renamingEntity.packageName, renamingEntity.entityType, renamingEntity.oldPath, newPath);
+    setRenamingEntity(null);
+    setRenameValue('');
   }, [renamingEntity, renameValue, onRenameEntity]);
 
   const handleRenameCancel = useCallback(() => {
@@ -630,91 +686,115 @@ export function PackageFileTree({
     setRenameValue('');
   }, []);
 
-  // Filter entities based on debounced search query
-  const filteredPackages = useMemo(() => {
-    if (!debouncedQuery.trim()) {
-      return packages.map((pkg) => ({ pkg, matchingTypes: {} })).sort((a, b) => a.pkg.name.localeCompare(b.pkg.name));
-    }
+  const isSearching = debouncedQuery.trim().length > 0;
 
-    const query = debouncedQuery.toLowerCase();
+  // Compute filtered packages: when searching, prune each entity-type tree to ancestors of matches.
+  const filteredPackages = useMemo<FilteredPackage[]>(() => {
+    if (!isSearching) {
+      return packages.map((pkg) => ({ pkg, matchingTrees: {} })).sort((a, b) => a.pkg.name.localeCompare(b.pkg.name));
+    }
+    const q = debouncedQuery.toLowerCase();
     const filtered: FilteredPackage[] = [];
-
-    packages.forEach((pkg) => {
-      const entityTree = entityTrees[pkg.name];
-      if (!entityTree) return;
-
-      const matchingTypes: Partial<Record<EntityType, EntityNode[]>> = {};
-      let hasMatchesInPackage = false;
-
-      ENTITY_TYPE_KEYS.forEach((entityType) => {
-        if (!hasEntities(pkg, entityType)) return;
-
-        const entities = entityTree[entityType] || [];
-        const matchingEntities = entities.filter((entity) => entity.name.toLowerCase().includes(query));
-
-        if (matchingEntities.length > 0) {
-          matchingTypes[entityType] = matchingEntities;
-          hasMatchesInPackage = true;
+    for (const pkg of packages) {
+      const tree = entityTrees[pkg.name];
+      if (!tree) continue;
+      const matchingTrees: Partial<Record<EntityType, TreeNode[]>> = {};
+      let hit = false;
+      for (const entityType of ENTITY_TYPE_KEYS) {
+        if (!hasEntities(pkg, entityType)) continue;
+        const pruned = filterTree(tree[entityType] ?? [], q);
+        if (pruned.length > 0) {
+          matchingTrees[entityType] = pruned;
+          hit = true;
         }
-      });
-
-      if (hasMatchesInPackage) {
-        filtered.push({ pkg, matchingTypes });
       }
-    });
-
-    return filtered;
-  }, [debouncedQuery, packages, entityTrees]);
-
-  // Auto-expand packages and entity types when searching
-  useEffect(() => {
-    if (debouncedQuery.trim() && filteredPackages.length > 0) {
-      const packagesToExpand: string[] = [];
-
-      setExpandedPackages((prev) => {
-        const newExpanded = new Set(prev);
-        filteredPackages.forEach(({ pkg }) => {
-          if (!prev.has(pkg.name)) {
-            packagesToExpand.push(pkg.name);
-          }
-          newExpanded.add(pkg.name);
-        });
-        return newExpanded;
-      });
-
-      setExpandedEntityTypes((prev) => {
-        const newExpanded = new Set(prev);
-        filteredPackages.forEach(({ pkg, matchingTypes }) => {
-          Object.keys(matchingTypes).forEach((entityType) => {
-            const typeKey = `${pkg.name}-${entityType}`;
-            newExpanded.add(typeKey);
-          });
-        });
-        return newExpanded;
-      });
-
-      packagesToExpand.forEach((packageName) => {
-        onPackageExpand(packageName);
-      });
+      if (hit) filtered.push({ pkg, matchingTrees });
     }
-  }, [debouncedQuery, filteredPackages, onPackageExpand]);
+    return filtered;
+  }, [isSearching, debouncedQuery, packages, entityTrees]);
 
-  const handleClearSearch = useCallback(() => {
-    setSearchQuery('');
-  }, []);
+  // While searching, ensure all matched packages are loaded + visually expanded
+  // (without mutating persisted state any more than necessary).
+  useEffect(() => {
+    if (!isSearching || filteredPackages.length === 0) return;
+    const packageNames = filteredPackages.map(({ pkg }) => pkg.name);
+    const typeKeys: string[] = [];
+    for (const { pkg, matchingTrees } of filteredPackages) {
+      for (const entityType of Object.keys(matchingTrees) as EntityType[]) {
+        typeKeys.push(`${pkg.name}-${entityType}`);
+      }
+    }
+    setExpandedPackages((prev) => {
+      const next = addKeysIfChanged(prev, packageNames);
+      if (next !== prev) {
+        for (const name of packageNames) {
+          if (!prev.has(name)) onPackageExpand(name);
+        }
+      }
+      return next;
+    });
+    setExpandedEntityTypes((prev) => addKeysIfChanged(prev, typeKeys));
+  }, [isSearching, filteredPackages, onPackageExpand]);
+
+  const handleClearSearch = useCallback(() => setSearchQuery(''), []);
 
   const handleRefreshPackages = useCallback(async () => {
     setIsRefreshing(true);
     try {
-      if (onRefresh) {
-        onRefresh();
-      }
+      onRefresh?.();
     } finally {
       setIsRefreshing(false);
     }
   }, [onRefresh]);
 
-  const isSearching = debouncedQuery.trim().length > 0;
+  // Factory: build a TreeContext for a given (packageName, entityType) pair.
+  // Memoized on the things that actually change across renders.
+  const makeCtx = useCallback(
+    (packageName: string, entityType: EntityType): TreeContext => ({
+      packageName,
+      entityType,
+      cache,
+      isSearching,
+      selectedEntityType,
+      selectedEntityName,
+      expandedFolders,
+      renamingEntity,
+      renameValue,
+      creatingEntity,
+      newEntityName,
+      onToggleFolder: toggleFolder,
+      onCreateStart: handleCreateEntityStart,
+      onCreateConfirm: handleCreateEntityConfirm,
+      onCreateCancel: handleCreateCancel,
+      onNewEntityNameChange: setNewEntityName,
+      onRenameValueChange: setRenameValue,
+      onRenameConfirm: handleRenameConfirm,
+      onRenameCancel: handleRenameCancel,
+      onEntityClick: handleEntityClick,
+      onContextMenu: handleContextMenu,
+      onDeleteRequest: handleDeleteRequest,
+    }),
+    [
+      cache,
+      isSearching,
+      selectedEntityType,
+      selectedEntityName,
+      expandedFolders,
+      renamingEntity,
+      renameValue,
+      creatingEntity,
+      newEntityName,
+      toggleFolder,
+      handleCreateEntityStart,
+      handleCreateEntityConfirm,
+      handleCreateCancel,
+      handleRenameConfirm,
+      handleRenameCancel,
+      handleEntityClick,
+      handleContextMenu,
+      handleDeleteRequest,
+    ]
+  );
 
   return (
     <div className="h-full flex flex-col bg-white dark:bg-gray-900 border-r border-gray-200 dark:border-gray-700">
@@ -732,7 +812,6 @@ export function PackageFileTree({
         )}
       </div>
 
-      {/* Search Bar */}
       <div className="p-2">
         <div className="relative flex items-center gap-2">
           <div className="relative flex-1">
@@ -763,40 +842,23 @@ export function PackageFileTree({
         ) : isSearching && filteredPackages.length === 0 ? (
           <div className="text-sm text-gray-500 dark:text-gray-400 text-center py-8">No matches found</div>
         ) : (
-          filteredPackages.map(({ pkg, matchingTypes }: FilteredPackage) => (
+          filteredPackages.map(({ pkg, matchingTrees }: FilteredPackage) => (
             <PackageNode
               key={pkg.name}
               pkg={pkg}
-              matchingTypes={matchingTypes}
+              matchingTrees={matchingTrees}
               isExpanded={expandedPackages.has(pkg.name)}
               isSearching={isSearching}
               expandedEntityTypes={expandedEntityTypes}
-              cache={cache}
-              selectedEntityType={selectedEntityType}
-              selectedEntityName={selectedEntityName}
-              renamingEntity={renamingEntity}
-              renameValue={renameValue}
-              creatingEntity={creatingEntity}
-              newEntityName={newEntityName}
               entityTrees={entityTrees}
               onTogglePackage={togglePackage}
               onToggleEntityType={toggleEntityType}
-              onCreateStart={handleCreateEntityStart}
-              onCreateConfirm={handleCreateEntityConfirm}
-              onCreateCancel={handleCreateCancel}
-              onNewEntityNameChange={setNewEntityName}
-              onRenameValueChange={setRenameValue}
-              onRenameConfirm={handleRenameConfirm}
-              onRenameCancel={handleRenameCancel}
-              onEntityClick={handleEntityClick}
-              onContextMenu={handleContextMenu}
-              onDeleteRequest={handleDeleteRequest}
+              makeCtx={makeCtx}
             />
           ))
         )}
       </div>
 
-      {/* Context Menu */}
       {contextMenu && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setContextMenu(null)} />
@@ -805,13 +867,13 @@ export function PackageFileTree({
             style={{ left: contextMenu.x, top: contextMenu.y }}
           >
             <button
-              onClick={() => handleCreateEntityStart(contextMenu.packageName, contextMenu.entityType)}
+              onClick={() => handleCreateEntityStart(contextMenu.packageName, contextMenu.entityType, '')}
               className="w-full px-4 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2"
             >
               <Plus className="w-4 h-4" />
               New {contextMenu.entityType.slice(0, -1)}
             </button>
-            {contextMenu.entityName && (
+            {contextMenu.entityPath && (
               <>
                 <button
                   onClick={handleRenameStart}
@@ -838,12 +900,12 @@ export function PackageFileTree({
           open={deleteDialogOpen}
           onOpenChange={setDeleteDialogOpen}
           title="Delete Entity"
-          description={`Are you sure you want to delete "${deleteTarget.entityName}"? This action cannot be undone.`}
+          description={`Are you sure you want to delete "${deleteTarget.entityPath}"? This action cannot be undone.`}
           confirmLabel="Delete"
           variant="destructive"
-          items={[deleteTarget.entityName]}
+          items={[deleteTarget.entityPath]}
           onConfirm={async () => {
-            await onDeleteEntity(deleteTarget.packageName, deleteTarget.entityType, deleteTarget.entityName);
+            await onDeleteEntity(deleteTarget.packageName, deleteTarget.entityType, deleteTarget.entityPath);
             setDeleteTarget(null);
           }}
         />

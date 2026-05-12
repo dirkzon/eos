@@ -66,7 +66,7 @@ Port.displayName = 'Port';
 
 // Helper to check if a device/resource/parameter value is configured
 const isValueConfigured = (value: unknown, type: 'device' | 'resource' | 'parameter'): boolean => {
-  if (value === undefined || value === '') return false;
+  if (value === undefined || value === null || value === '') return false;
 
   if (type === 'parameter') {
     // eos_dynamic means the value must be supplied at run time — treat as unfilled

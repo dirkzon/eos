@@ -3,6 +3,15 @@ import type { EntityType, ValidationError, ValidationResult } from '@/lib/types/
 import { ENTITY_FILE_NAMES } from '@/lib/types/filesystem';
 
 /**
+ * Last `/`-separated segment of a posix-style relative path. Mirrors `path.posix.basename`
+ * but is safe to use in client components (no Node imports).
+ */
+export function entityBasename(p: string): string {
+  const i = p.lastIndexOf('/');
+  return i < 0 ? p : p.slice(i + 1);
+}
+
+/**
  * Detects if content contains Jinja2 template syntax
  */
 export function hasJinjaSyntax(content: string): boolean {
@@ -122,7 +131,8 @@ export function extractHoldsFromRawTasks(tasks: Record<string, unknown>[]): Reco
           if ('ref' in obj) {
             if (obj.hold === true) resourceHolds[slot] = true;
             resources[slot] = obj.ref;
-          } else if ('name' in obj && !('allocation_type' in obj)) {
+          } else if ('name' in obj && typeof obj.name === 'string' && !('allocation_type' in obj)) {
+            // Static resource: { name, hold } collapses to bare string in the in-memory model.
             if (obj.hold === true) resourceHolds[slot] = true;
             resources[slot] = obj.name;
           } else if (obj.hold === true) {

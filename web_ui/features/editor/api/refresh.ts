@@ -21,9 +21,13 @@ export async function refreshPackages(): Promise<ActionResult> {
   try {
     await orchestratorPost('/refresh/packages', {});
 
-    // Revalidate both editor and management pages to reflect changes
+    // Revalidate every page whose server render reads spec data so the next
+    // navigation reflects the freshly-synced definitions.
     revalidatePath('/editor');
     revalidatePath('/management');
+    revalidatePath('/protocol-runs');
+    revalidatePath('/tasks');
+    revalidatePath('/campaigns');
 
     return {
       success: true,

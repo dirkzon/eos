@@ -15,6 +15,7 @@ class ProtocolRunConfigRequest(BaseModel):
     type: str
     iterations: int
     max_concurrent: int = 0
+    priority: int = 1
 
 
 class SimRunRequest(BaseModel):
@@ -51,7 +52,13 @@ class SimulatorController(Controller):
         config_yaml = {
             "packages": data.packages,
             "protocols": [
-                {"type": p.type, "iterations": p.iterations, "max_concurrent": p.max_concurrent} for p in data.protocols
+                {
+                    "type": p.type,
+                    "iterations": p.iterations,
+                    "max_concurrent": p.max_concurrent,
+                    "priority": p.priority,
+                }
+                for p in data.protocols
             ],
         }
 

@@ -13,7 +13,7 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1014.0",
     "@hookform/resolvers": "^5.2.2",
-    "@modelcontextprotocol/sdk": "^1.25.2",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@monaco-editor/react": "^4.7.0",
     "@radix-ui/react-dialog": "^1.1.15",
     "@radix-ui/react-dropdown-menu": "^2.1.16",
@@ -26,6 +26,7 @@
     "@radix-ui/react-tabs": "^1.1.13",
     "@radix-ui/react-tooltip": "^1.2.8",
     "@tanstack/react-table": "^8.21.3",
+    "@tanstack/react-virtual": "^3.13.24",
     "@types/js-yaml": "^4.0.9",
     "@xyflow/react": "^12.10.1",
     "ai": "^6.0.116",
@@ -36,10 +37,11 @@
     "fast-glob": "^3.3.3",
     "html-to-image": "^1.11.13",
     "js-yaml": "^4.1.1",
+    "katex": "^0.16.45",
     "lucide-react": "^0.577.0",
     "mcp-handler": "^1.0.7",
     "monaco-editor": "^0.55.1",
-    "next": "^16.2.0",
+    "next": "^16.2.3",
     "next-themes": "^0.4.6",
     "papaparse": "^5.5.3",
     "postgres": "^3.4.8",
@@ -50,7 +52,9 @@
     "react-markdown": "^10.1.0",
     "react-resizable-panels": "^4.7.3",
     "rehype-highlight": "^7.0.2",
+    "rehype-katex": "^7.0.1",
     "remark-gfm": "^4.0.1",
+    "remark-math": "^6.0.0",
     "tailwind-merge": "^3.5.0",
     "zod": "^4.3.6",
     "zustand": "^5.0.12"
@@ -74,5 +78,10 @@
     "tailwindcss": "^4",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.57.1"
+  },
+  "overrides": {
+    "mcp-handler": {
+      "@modelcontextprotocol/sdk": "$@modelcontextprotocol/sdk"
+    }
   }
 }

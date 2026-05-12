@@ -44,11 +44,29 @@ export function ProtocolRunExecutionView({
   const [taskStatuses, setTaskStatuses] = React.useState<TaskStatusInfo[]>(initialTaskStatuses);
   const [selectedTaskName, setSelectedTaskName] = React.useState<string | null>(null);
   const [currentProtocolRun, setCurrentProtocolRun] = React.useState<ProtocolRun>(protocolRun);
-  const [pollingInterval, setPollingInterval] = React.useState(protocolRun.status === 'RUNNING' ? 5000 : 0);
+  const isActiveStatus = (status: ProtocolRun['status']) => status === 'RUNNING' || status === 'CREATED';
+  const [pollingInterval, setPollingInterval] = React.useState(isActiveStatus(protocolRun.status) ? 5000 : 0);
   const [isRefreshing, setIsRefreshing] = React.useState(false);
   const [taskDetailsCache, setTaskDetailsCache] = React.useState<Record<string, Task>>({});
   const taskDetailsCacheRef = React.useRef(taskDetailsCache);
   taskDetailsCacheRef.current = taskDetailsCache;
+  const cacheInsertionOrderRef = React.useRef<string[]>([]);
+
+  const TASK_DETAILS_CACHE_MAX = 100;
+  const insertTaskDetails = React.useCallback((name: string, task: Task) => {
+    setTaskDetailsCache((prev) => {
+      const next = { ...prev, [name]: task };
+      const order = cacheInsertionOrderRef.current;
+      if (!(name in prev)) {
+        order.push(name);
+        while (order.length > TASK_DETAILS_CACHE_MAX) {
+          const oldest = order.shift();
+          if (oldest && oldest !== name) delete next[oldest];
+        }
+      }
+      return next;
+    });
+  }, []);
   const [isLoadingTaskDetails, setIsLoadingTaskDetails] = React.useState(false);
   const [isCancelling, setIsCancelling] = React.useState(false);
   const [showCancelDialog, setShowCancelDialog] = React.useState(false);
@@ -69,10 +87,13 @@ export function ProtocolRunExecutionView({
         // Invalidate cached task details when their status changes
         setTaskDetailsCache((prev) => {
           const updated = { ...prev };
+          const order = cacheInsertionOrderRef.current;
           for (const fresh of freshStatuses) {
             const old = taskStatuses.find((t) => t.name === fresh.name);
             if (old && old.status !== fresh.status && fresh.name in updated) {
               delete updated[fresh.name];
+              const idx = order.indexOf(fresh.name);
+              if (idx !== -1) order.splice(idx, 1);
             }
           }
           return updated;
@@ -80,8 +101,8 @@ export function ProtocolRunExecutionView({
 
         setTaskStatuses(freshStatuses);
 
-        // Disable polling if protocol run is no longer running
-        if (freshProtocolRun.status !== 'RUNNING' && pollingInterval !== 0) {
+        // Disable polling once the protocol run reaches a terminal state
+        if (!isActiveStatus(freshProtocolRun.status) && pollingInterval !== 0) {
           setPollingInterval(0);
         }
       }
@@ -107,12 +128,9 @@ export function ProtocolRunExecutionView({
       try {
         const taskDetails = await getTaskDetails(taskName, protocolRun.name);
         if (taskDetails) {
-          setTaskDetailsCache((prev) => ({
-            ...prev,
-            [taskName]: taskDetails,
-          }));
+          insertTaskDetails(taskName, taskDetails);
         } else {
-          // Task not yet in DB — build a minimal Task from spec data
+          // Task not yet in DB, build a minimal Task from spec data
           const specTask = protocolSpec.tasks.find((t) => t.name === taskName);
           if (specTask) {
             const statusInfo = taskStatuses.find((t) => t.name === taskName);
@@ -125,10 +143,7 @@ export function ProtocolRunExecutionView({
               devices: specTask.devices as Record<string, TaskDeviceConfig> | undefined,
               input_parameters: (specTask.parameters as Record<string, unknown>) ?? null,
             };
-            setTaskDetailsCache((prev) => ({
-              ...prev,
-              [taskName]: fallbackTask,
-            }));
+            insertTaskDetails(taskName, fallbackTask);
           }
         }
       } catch (error) {
@@ -137,7 +152,7 @@ export function ProtocolRunExecutionView({
         setIsLoadingTaskDetails(false);
       }
     },
-    [protocolRun.name, protocolRun.created_at, protocolSpec.tasks, taskStatuses]
+    [protocolRun.name, protocolRun.created_at, protocolSpec.tasks, taskStatuses, insertTaskDetails]
   );
 
   // Auto-refetch selected task details when its cache entry is invalidated
@@ -233,7 +248,7 @@ export function ProtocolRunExecutionView({
               onIntervalChange={setPollingInterval}
               onRefresh={handleRefresh}
               isRefreshing={isRefreshing}
-              disabled={currentProtocolRun.status !== 'RUNNING'}
+              disabled={!isActiveStatus(currentProtocolRun.status)}
               intervals={PROTOCOL_RUN_POLLING_INTERVALS}
             />
           </div>

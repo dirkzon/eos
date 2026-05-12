@@ -34,6 +34,15 @@ class ProtocolTypes(BaseModel):
     protocol_types: list[str]
 
 
+class ReloadProtocolsRequest(BaseModel):
+    protocol_types: list[str]
+    if_unused: bool = False
+
+
+class ReloadProtocolsResponse(BaseModel):
+    reloaded: list[str]
+
+
 class ProtocolTypesResponse(BaseModel):
     protocol_types: list[str]
 
@@ -105,11 +114,11 @@ class ProtocolController(Controller):
 
     @post("/reload")
     async def reload_protocols(
-        self, data: ProtocolTypes, db: AsyncDbSession, orchestrator: Orchestrator
-    ) -> dict[str, str]:
+        self, data: ReloadProtocolsRequest, db: AsyncDbSession, orchestrator: Orchestrator
+    ) -> ReloadProtocolsResponse:
         """Reload protocol configurations."""
-        await orchestrator.loading.reload_protocols(db, set(data.protocol_types))
-        return {"message": "Protocol configurations reloaded"}
+        reloaded = await orchestrator.loading.reload_protocols(db, set(data.protocol_types), if_unused=data.if_unused)
+        return ReloadProtocolsResponse(reloaded=sorted(reloaded))
 
     @post("/validate")
     async def validate_protocol_yaml(self, data: ProtocolValidationRequest, db: AsyncDbSession) -> dict:

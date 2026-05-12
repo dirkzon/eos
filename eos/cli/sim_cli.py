@@ -3,6 +3,7 @@
 import json
 import logging
 import sys
+from dataclasses import asdict
 from typing import Annotated
 
 import typer
@@ -27,7 +28,7 @@ def simulate(
     if output_json:
         logging.getLogger("rich").setLevel(logging.CRITICAL)
 
-    timeline = run_simulation(
+    timeline, deadlock = run_simulation(
         config_path=config,
         user_dir=user_dir,
         verbose=verbose if not output_json else False,
@@ -55,4 +56,7 @@ def simulate(
         }
         for ev in starts
     ]
-    sys.stdout.write(json.dumps({"timeline": task_records, "stats": stats}))
+    payload: dict = {"timeline": task_records, "stats": stats}
+    if deadlock is not None:
+        payload["deadlock"] = asdict(deadlock)
+    sys.stdout.write(json.dumps(payload))

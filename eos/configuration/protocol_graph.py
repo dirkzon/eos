@@ -6,8 +6,10 @@ import networkx as nx
 from eos.configuration.entities.protocol_def import ProtocolDef
 from eos.configuration.entities.task_def import TaskDef
 from eos.configuration.entities.task_spec_def import TaskSpecDef
-from eos.configuration.exceptions import EosTaskGraphError
+from eos.configuration.exceptions import EosTaskGraphError, EosTaskValidationError
 from eos.configuration.registries import TaskSpecRegistry
+from eos.configuration.utils import is_device_reference, is_parameter_reference, is_resource_reference
+from eos.logging.batch_error_logger import batch_error, raise_batched_errors
 
 
 class ProtocolGraphBuilder:
@@ -77,10 +79,11 @@ class ProtocolGraph:
         self._graph = ProtocolGraphBuilder(protocol).build_graph()
 
         self._task_subgraph = self._create_task_subgraph()
-        self._topologically_sorted_tasks = self._stable_topological_sort(self._task_subgraph)
 
         if not nx.is_directed_acyclic_graph(self._task_subgraph):
             raise EosTaskGraphError(f"Task graph of protocol '{protocol.type}' contains cycles.")
+
+        self._topologically_sorted_tasks = self._stable_topological_sort(self._task_subgraph)
 
     def _create_task_subgraph(self) -> nx.Graph:
         return nx.subgraph_view(self._graph, filter_node=lambda n: self._graph.nodes[n]["node_type"] == "task")
@@ -118,3 +121,64 @@ class ProtocolGraph:
         dg.add_edges_from(graph.edges())
 
         return list(nx.topological_sort(dg))
+
+
+class TaskReferenceOrderingValidator:
+    """Validates that each task reference points to a transitive ancestor in the dependency DAG."""
+
+    def __init__(self, protocol: ProtocolDef):
+        self._protocol = protocol
+        raw_graph = ProtocolGraphBuilder(protocol).build_graph()
+        self._task_subgraph: nx.DiGraph = nx.DiGraph(
+            nx.subgraph_view(raw_graph, filter_node=lambda n: raw_graph.nodes[n]["node_type"] == "task")
+        )
+
+        cycles = list(nx.simple_cycles(self._task_subgraph))
+        if cycles:
+            cycles_str = "; ".join(" -> ".join([*cycle, cycle[0]]) for cycle in cycles)
+            raise EosTaskGraphError(f"Protocol '{protocol.type}' has dependency cycles: {cycles_str}")
+
+        self._ancestors: dict[str, set[str]] = {
+            task: nx.ancestors(self._task_subgraph, task) for task in self._task_subgraph.nodes
+        }
+
+    def validate(self) -> None:
+        for task in self._protocol.tasks:
+            self._validate_task_references(task)
+        raise_batched_errors(root_exception_type=EosTaskValidationError)
+
+    def _validate_task_references(self, task: TaskDef) -> None:
+        for parameter_name, parameter_value in task.parameters.items():
+            if is_parameter_reference(parameter_value):
+                ref_task_name = str(parameter_value).split(".")[0]
+                self._check_ordering(task.name, ref_task_name, "parameter", parameter_name)
+
+        for resource_name, resource_value in task.resources.items():
+            if isinstance(resource_value, str) and is_resource_reference(resource_value):
+                ref_task_name = resource_value.split(".")[0]
+                self._check_ordering(task.name, ref_task_name, "resource", resource_name)
+
+        for device_name, device_value in task.devices.items():
+            if isinstance(device_value, str) and is_device_reference(device_value):
+                ref_task_name = device_value.split(".")[0]
+                self._check_ordering(task.name, ref_task_name, "device", device_name)
+
+    def _check_ordering(self, task_name: str, ref_task_name: str, kind: str, slot_name: str) -> None:
+        if ref_task_name == task_name:
+            batch_error(
+                f"{kind} '{slot_name}' in task '{task_name}' references itself.",
+                EosTaskValidationError,
+            )
+            return
+
+        # Dangling references are reported by TaskValidator.
+        if ref_task_name not in self._task_subgraph.nodes:
+            return
+
+        if ref_task_name not in self._ancestors[task_name]:
+            batch_error(
+                f"{kind} '{slot_name}' in task '{task_name}' references task '{ref_task_name}' "
+                f"which does not run before it. Add '{ref_task_name}' to the dependencies of "
+                f"'{task_name}' (directly or transitively).",
+                EosTaskValidationError,
+            )

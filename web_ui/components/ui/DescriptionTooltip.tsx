@@ -19,6 +19,7 @@ export function DescriptionTooltip({ description, constraints }: DescriptionTool
         <Tooltip.Trigger asChild>
           <button
             type="button"
+            tabIndex={-1}
             className="inline-flex ml-1 align-middle text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
           >
             <CircleHelp className="h-3.5 w-3.5" />

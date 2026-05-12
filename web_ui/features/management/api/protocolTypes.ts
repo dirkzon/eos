@@ -20,6 +20,7 @@ export async function getProtocolTypes(): Promise<ProtocolType[]> {
       .select({
         name: definitions.name,
         loaded: definitions.isLoaded,
+        packageName: definitions.packageName,
       })
       .from(definitions)
       .where(eq(definitions.type, 'protocol'));
@@ -27,6 +28,7 @@ export async function getProtocolTypes(): Promise<ProtocolType[]> {
     return results.map((row) => ({
       name: row.name,
       loaded: row.loaded,
+      package: row.packageName,
     }));
   } catch (error) {
     console.error('Failed to fetch protocol types:', error);

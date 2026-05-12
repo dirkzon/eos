@@ -126,11 +126,13 @@ class ClaudeAgentSDKModel(Model):
 
         # Structured output uses an internal StructuredOutput tool call, which requires
         # at least 2 turns: one for the model to call the tool, one to process the result.
-        max_turns = 3 if output_format else 1
+        # Code execution tools let the agent write and run scripts.
+        allowed_tools = ["Bash", "Read", "Write"]
+        max_turns = 8 if output_format else 5
         sdk_options = ClaudeAgentOptions(
             model=self._sdk_model_name,
             max_turns=max_turns,
-            allowed_tools=[],
+            allowed_tools=allowed_tools,
             permission_mode="bypassPermissions",
         )
         if instructions:

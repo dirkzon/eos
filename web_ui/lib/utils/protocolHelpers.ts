@@ -8,7 +8,7 @@ import { flattenInputParameters } from '@/lib/utils/paramGroups';
  */
 export function isReferenceValue(value: unknown): boolean {
   if (typeof value !== 'string') return false;
-  return /^[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*(\..*)?$/.test(value);
+  return /^[a-zA-Z_][a-zA-Z0-9_-]*\.[a-zA-Z_][a-zA-Z0-9_-]*(\..*)?$/.test(value);
 }
 
 /**

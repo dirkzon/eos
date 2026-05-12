@@ -334,6 +334,7 @@ export function TaskPropertiesPanel({
                   onChange={(e) =>
                     onUpdate(taskNode.name, { duration: e.target.value ? Number(e.target.value) : undefined })
                   }
+                  onWheel={(e) => e.currentTarget.blur()}
                   placeholder="Task duration in seconds"
                   className="w-full px-2.5 py-1.5 text-sm border border-gray-300 dark:border-slate-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-yellow-500 bg-white dark:bg-slate-700 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500"
                 />

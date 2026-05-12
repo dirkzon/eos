@@ -674,29 +674,41 @@ class CpSatSchedulingSolver:
         bucket: str,
         is_device: bool,
     ) -> None:
-        """Add a bridge interval between task_name and each successor that uses the same device/resource."""
-        for succ_name in self._get_task_successors(run_name, task_name, protocol_graph):
-            succ_task = protocol_graph.get_task(succ_name)
-            succ_vars = self._task_vars[(run_name, succ_name)]
+        """Add a bridge interval between task_name and the nearest descendant(s) using the same device/resource.
 
-            if is_device:
-                uses_same = self._successor_uses_device_bucket(protocol_graph, succ_task, bucket)
-            else:
-                uses_same = self._successor_uses_resource_bucket(protocol_graph, succ_task, bucket)
+        Walks the DAG beyond direct successors so that holds spanning intermediate tasks
+        (which don't use the held resource) are still enforced.  O(V+E) in the task graph.
+        """
+        visited: set[str] = set()
+        frontier = self._get_task_successors(run_name, task_name, protocol_graph)
+        while frontier:
+            next_frontier: list[str] = []
+            for desc_name in frontier:
+                if desc_name in visited:
+                    continue
+                visited.add(desc_name)
 
-            if not uses_same:
-                continue
+                desc_task = protocol_graph.get_task(desc_name)
+                if is_device:
+                    uses_same = self._successor_uses_device_bucket(protocol_graph, desc_task, bucket)
+                else:
+                    uses_same = self._successor_uses_resource_bucket(protocol_graph, desc_task, bucket)
 
-            bridge_size = self.model.NewIntVar(
-                0, self._horizon, f"bridge_size_{run_name}_{task_name}_to_{succ_name}_{bucket}"
-            )
-            bridge_interval = self.model.NewIntervalVar(
-                task_vars.end,
-                bridge_size,
-                succ_vars.start,
-                f"bridge_iv_{run_name}_{task_name}_to_{succ_name}_{bucket}",
-            )
-            self._resource_intervals.setdefault(bucket, []).append(bridge_interval)
+                if uses_same:
+                    desc_vars = self._task_vars[(run_name, desc_name)]
+                    bridge_size = self.model.NewIntVar(
+                        0, self._horizon, f"bridge_size_{run_name}_{task_name}_to_{desc_name}_{bucket}"
+                    )
+                    bridge_interval = self.model.NewIntervalVar(
+                        task_vars.end,
+                        bridge_size,
+                        desc_vars.start,
+                        f"bridge_iv_{run_name}_{task_name}_to_{desc_name}_{bucket}",
+                    )
+                    self._resource_intervals.setdefault(bucket, []).append(bridge_interval)
+                else:
+                    next_frontier.extend(self._get_task_successors(run_name, desc_name, protocol_graph))
+            frontier = next_frontier
 
     def _successor_uses_device_bucket(self, protocol_graph: ProtocolGraph, succ_task: TaskDef, bucket: str) -> bool:
         """Check if a successor task uses the device identified by bucket."""
@@ -779,34 +791,43 @@ class CpSatSchedulingSolver:
             if not slot_choices:
                 return
 
-        for succ_name in self._get_task_successors(run_name, task_name, protocol_graph):
-            succ_task = protocol_graph.get_task(succ_name)
-            succ_vars = self._task_vars[(run_name, succ_name)]
+        # Walk descendants (not just direct successors) to find the nearest task(s)
+        # that use the same dynamic resource/device.  O(V+E) in the task graph.
+        visited: set[str] = set()
+        frontier = self._get_task_successors(run_name, task_name, protocol_graph)
+        while frontier:
+            next_frontier: list[str] = []
+            for desc_name in frontier:
+                if desc_name in visited:
+                    continue
+                visited.add(desc_name)
 
-            # Check if successor uses the same dynamic device/resource
-            uses_same = self._successor_uses_dynamic_root(
-                protocol_graph, succ_task, dynamic_root_task, dynamic_root_slot, slot_choices, is_device
-            )
-            if not uses_same:
-                continue
-
-            # Create optional bridge intervals for each choice
-            for (lab_name, dev_name), bool_var in slot_choices:
-                bucket = f"device_{lab_name}_{dev_name}" if is_device else f"resource_{dev_name}"
-
-                bridge_size = self.model.NewIntVar(
-                    0,
-                    self._horizon,
-                    f"bridge_size_{run_name}_{task_name}_to_{succ_name}_{bucket}",
+                desc_task = protocol_graph.get_task(desc_name)
+                uses_same = self._successor_uses_dynamic_root(
+                    protocol_graph, desc_task, dynamic_root_task, dynamic_root_slot, slot_choices, is_device
                 )
-                bridge_interval = self.model.NewOptionalIntervalVar(
-                    task_vars.end,
-                    bridge_size,
-                    succ_vars.start,
-                    bool_var,
-                    f"bridge_iv_{run_name}_{task_name}_to_{succ_name}_{bucket}",
-                )
-                self._resource_intervals.setdefault(bucket, []).append(bridge_interval)
+
+                if uses_same:
+                    desc_vars = self._task_vars[(run_name, desc_name)]
+                    for (lab_name, dev_name), bool_var in slot_choices:
+                        bucket = f"device_{lab_name}_{dev_name}" if is_device else f"resource_{dev_name}"
+
+                        bridge_size = self.model.NewIntVar(
+                            0,
+                            self._horizon,
+                            f"bridge_size_{run_name}_{task_name}_to_{desc_name}_{bucket}",
+                        )
+                        bridge_interval = self.model.NewOptionalIntervalVar(
+                            task_vars.end,
+                            bridge_size,
+                            desc_vars.start,
+                            bool_var,
+                            f"bridge_iv_{run_name}_{task_name}_to_{desc_name}_{bucket}",
+                        )
+                        self._resource_intervals.setdefault(bucket, []).append(bridge_interval)
+                else:
+                    next_frontier.extend(self._get_task_successors(run_name, desc_name, protocol_graph))
+            frontier = next_frontier
 
     def _successor_uses_dynamic_root(
         self,

@@ -5,7 +5,16 @@ export interface InputProps extends React.InputHTMLAttributes<HTMLInputElement> 
   error?: string;
 }
 
-const Input = React.forwardRef<HTMLInputElement, InputProps>(({ className, type, error, ...props }, ref) => {
+const Input = React.forwardRef<HTMLInputElement, InputProps>(({ className, type, error, onWheel, ...props }, ref) => {
+  // Number inputs natively change value on wheel; blur on wheel so the form can be scrolled without altering values.
+  const handleWheel =
+    type === 'number'
+      ? (e: React.WheelEvent<HTMLInputElement>) => {
+          e.currentTarget.blur();
+          onWheel?.(e);
+        }
+      : onWheel;
+
   return (
     <div className="w-full">
       <input
@@ -16,6 +25,7 @@ const Input = React.forwardRef<HTMLInputElement, InputProps>(({ className, type,
           className
         )}
         ref={ref}
+        onWheel={handleWheel}
         {...props}
       />
       {error && <p className="mt-1 text-sm text-red-600 dark:text-red-400">{error}</p>}

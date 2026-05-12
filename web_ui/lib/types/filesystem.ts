@@ -9,20 +9,31 @@ export interface Package {
   hasProtocols: boolean;
 }
 
-export interface EntityNode {
-  name: string;
+export interface EntityLeafNode {
+  kind: 'entity';
+  name: string; // basename, e.g. "a"
+  path: string; // path relative to entityDir, e.g. "test/a"
   type: EntityType;
   packageName: string;
   hasYaml: boolean;
   hasPython: boolean;
 }
 
+export interface FolderNode {
+  kind: 'folder';
+  name: string; // basename, e.g. "test"
+  path: string; // path relative to entityDir, e.g. "test"
+  children: TreeNode[];
+}
+
+export type TreeNode = FolderNode | EntityLeafNode;
+
 export interface EntityTree {
   packageName: string;
-  devices: EntityNode[];
-  tasks: EntityNode[];
-  labs: EntityNode[];
-  protocols: EntityNode[];
+  devices: TreeNode[];
+  tasks: TreeNode[];
+  labs: TreeNode[];
+  protocols: TreeNode[];
 }
 
 export interface EntityFiles {

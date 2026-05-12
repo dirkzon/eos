@@ -8,12 +8,96 @@ import {
   type Package,
   type EntityTree,
   type EntityFiles,
+  type TreeNode,
   type WriteFilesRequest,
 } from '@/lib/types/filesystem';
 
 export const getUserDir = () => {
   return process.env.USER_DIR || path.join(process.cwd(), '..', 'user');
 };
+
+const MAX_TREE_DEPTH = 16;
+const IGNORED_DIR_NAMES = new Set(['__pycache__', 'node_modules', '.venv', 'venv']);
+
+function sortTreeNodes(nodes: TreeNode[]): void {
+  nodes.sort((a, b) => {
+    if (a.kind !== b.kind) return a.kind === 'folder' ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+}
+
+async function walkEntityDir(
+  absDir: string,
+  relDir: string,
+  entityType: EntityType,
+  packageName: string,
+  depth: number
+): Promise<TreeNode[]> {
+  if (depth >= MAX_TREE_DEPTH) return [];
+
+  const { yaml: yamlFile, python: pythonFile } = ENTITY_FILE_NAMES[entityType];
+  let entries;
+  try {
+    entries = await fs.readdir(absDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+
+  let yamlPresent = false;
+  let pythonPresent = false;
+  const childDirs: string[] = [];
+  for (const entry of entries) {
+    if (entry.isFile()) {
+      if (entry.name === yamlFile) yamlPresent = true;
+      else if (pythonFile && entry.name === pythonFile) pythonPresent = true;
+    } else if (entry.isDirectory() && !entry.name.startsWith('.') && !IGNORED_DIR_NAMES.has(entry.name)) {
+      childDirs.push(entry.name);
+    }
+  }
+
+  // Leaf: a directory containing the entity's yaml file is a terminal entity.
+  // The root entityDir itself is never a leaf (relDir === '').
+  if (yamlPresent && relDir !== '') {
+    return [
+      {
+        kind: 'entity',
+        name: path.basename(relDir),
+        path: relDir,
+        type: entityType,
+        packageName,
+        hasYaml: true,
+        hasPython: pythonPresent,
+      },
+    ];
+  }
+
+  const childResults = await Promise.all(
+    childDirs.map((name) =>
+      walkEntityDir(
+        path.join(absDir, name),
+        relDir ? path.posix.join(relDir, name) : name,
+        entityType,
+        packageName,
+        depth + 1
+      )
+    )
+  );
+
+  const out: TreeNode[] = [];
+  for (let i = 0; i < childDirs.length; i++) {
+    const name = childDirs[i];
+    const sub = childResults[i];
+    if (sub.length === 0) continue; // hide empty subtree
+    const childRel = relDir ? path.posix.join(relDir, name) : name;
+    if (sub.length === 1 && sub[0].kind === 'entity' && sub[0].path === childRel) {
+      out.push(sub[0]);
+    } else {
+      out.push({ kind: 'folder', name, path: childRel, children: sub });
+    }
+  }
+  sortTreeNodes(out);
+  return out;
+}
 
 // Entity templates for creating new entities
 export const ENTITY_TEMPLATES = {
@@ -164,60 +248,20 @@ export async function scanPackages(): Promise<Package[]> {
 
 // Get entity tree for a package
 export async function getPackageTree(packageName: string): Promise<EntityTree> {
-  const userDir = getUserDir();
-  const packagePath = path.join(userDir, packageName);
-
-  const tree: EntityTree = {
-    packageName,
-    devices: [],
-    tasks: [],
-    labs: [],
-    protocols: [],
-  };
-
+  const packagePath = path.join(getUserDir(), packageName);
   const entityTypes: EntityType[] = ['devices', 'tasks', 'labs', 'protocols'];
 
-  for (const entityType of entityTypes) {
-    const entityDir = path.join(packagePath, entityType);
+  const results = await Promise.all(
+    entityTypes.map((type) => walkEntityDir(path.join(packagePath, type), '', type, packageName, 0))
+  );
 
-    try {
-      const entries = await fs.readdir(entityDir, { withFileTypes: true });
-
-      for (const entry of entries) {
-        if (entry.isDirectory()) {
-          const entityPath = path.join(entityDir, entry.name);
-          const fileNames = ENTITY_FILE_NAMES[entityType];
-
-          const [hasYaml, hasPython] = await Promise.all([
-            fs
-              .access(path.join(entityPath, fileNames.yaml))
-              .then(() => true)
-              .catch(() => false),
-            fileNames.python
-              ? fs
-                  .access(path.join(entityPath, fileNames.python))
-                  .then(() => true)
-                  .catch(() => false)
-              : Promise.resolve(false),
-          ]);
-
-          tree[entityType].push({
-            name: entry.name,
-            type: entityType,
-            packageName,
-            hasYaml,
-            hasPython,
-          });
-        }
-      }
-
-      tree[entityType].sort((a, b) => a.name.localeCompare(b.name));
-    } catch {
-      // Directory doesn't exist, skip
-    }
-  }
-
-  return tree;
+  return {
+    packageName,
+    devices: results[0],
+    tasks: results[1],
+    labs: results[2],
+    protocols: results[3],
+  };
 }
 
 // Get max mtime across all files belonging to an entity
@@ -413,7 +457,7 @@ export async function renameEntity(
       const data = yaml.load(yamlContent) as { type?: string };
 
       if (data && data.type) {
-        data.type = newName;
+        data.type = path.basename(newName);
         const newYamlContent = yaml.dump(data, { lineWidth: -1, noRefs: true });
         await fs.writeFile(yamlPath, newYamlContent, 'utf-8');
       }

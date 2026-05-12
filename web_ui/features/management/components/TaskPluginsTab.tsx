@@ -8,6 +8,7 @@ import { ConfirmationDialog } from './dialogs/ConfirmationDialog';
 import { reloadTaskPlugins } from '../api/taskPlugins';
 import type { TaskPluginInfo } from '@/lib/types/management';
 import { useOrchestratorConnected } from '@/contexts/OrchestratorStatusContext';
+import { packageColumn } from './columns';
 
 interface TaskPluginsTabProps {
   initialTaskPlugins: TaskPluginInfo[];
@@ -24,6 +25,7 @@ export function TaskPluginsTab({ initialTaskPlugins }: TaskPluginsTabProps) {
       header: 'Task Type',
       cell: ({ row }) => <div className="font-medium">{row.getValue('type')}</div>,
     },
+    packageColumn<TaskPluginInfo>(initialTaskPlugins),
     {
       accessorKey: 'description',
       header: 'Description',
@@ -54,8 +56,11 @@ export function TaskPluginsTab({ initialTaskPlugins }: TaskPluginsTabProps) {
   ];
 
   const handleReloadSingle = (taskType: string) => {
-    setSelectedRows([{ type: taskType }]);
-    setReloadDialogOpen(true);
+    const plugin = initialTaskPlugins.find((p) => p.type === taskType);
+    if (plugin) {
+      setSelectedRows([plugin]);
+      setReloadDialogOpen(true);
+    }
   };
 
   const handleReloadSelected = () => {

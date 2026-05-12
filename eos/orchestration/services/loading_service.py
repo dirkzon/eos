@@ -195,16 +195,34 @@ class LoadingService:
         self._configuration_manager.unload_protocols(protocol_types)
         await self._configuration_manager.def_sync.mark_protocols_loaded(db, protocol_types, False)
 
-    async def reload_protocols(self, db: AsyncDbSession, protocol_types: set[str]) -> None:
-        """Reload one or more protocols in the orchestrator."""
+    async def reload_protocols(
+        self, db: AsyncDbSession, protocol_types: set[str], *, if_unused: bool = False
+    ) -> set[str]:
+        """Reload protocols. With ``if_unused``, silently skip in-use or not-loaded ones. Returns reloaded set."""
         async with self._loading_lock:
+            to_reload: set[str] = set()
             for protocol_type in protocol_types:
-                await self._check_protocol_usage(db, protocol_type)
+                if if_unused and protocol_type not in self._configuration_manager.protocols:
+                    log.debug(f"Skipping reload of protocol '{protocol_type}': not loaded")
+                    continue
+                try:
+                    await self._check_protocol_usage(db, protocol_type)
+                except EosProtocolInUseError:
+                    if not if_unused:
+                        raise
+                    log.info(f"Skipping reload of protocol '{protocol_type}': in use")
+                    continue
+                to_reload.add(protocol_type)
 
-            self._configuration_manager.unload_protocols(protocol_types)
-            await self._configuration_manager.def_sync.mark_protocols_loaded(db, protocol_types, False)
-            self._configuration_manager.load_protocols(protocol_types)
-            await self._configuration_manager.def_sync.mark_protocols_loaded(db, protocol_types, True)
+            if not to_reload:
+                return to_reload
+
+            self._configuration_manager.unload_protocols(to_reload)
+            await self._configuration_manager.def_sync.mark_protocols_loaded(db, to_reload, False)
+            self._configuration_manager.load_protocols(to_reload)
+            await self._configuration_manager.def_sync.mark_protocols_loaded(db, to_reload, True)
+            await self._configuration_manager.def_sync.sync_protocol_defs(db, names=to_reload)
+            return to_reload
 
     async def list_protocols(self) -> dict[str, bool]:
         """Return a dictionary of protocol types and a boolean indicating whether they are loaded."""
@@ -310,23 +328,40 @@ class LoadingService:
                 f"Cannot remove package '{package_name}': protocols {in_use_protocols} are currently loaded"
             )
 
-    async def reload_task_plugins(self, db: AsyncDbSession, task_types: set[str]) -> None:
-        """Reload one or more task plugins and their specs in the orchestrator."""
-        resolved = set()
+    async def reload_task_plugins(
+        self, db: AsyncDbSession, task_types: set[str], *, if_unused: bool = False
+    ) -> set[str]:
+        """Reload task plugins. With ``if_unused``, silently skip unknown or in-use ones. Returns reloaded set."""
+        resolved: set[str] = set()
         for name in task_types:
             task_type = self._configuration_manager.task_specs.resolve_type(name)
             if task_type is None:
+                if if_unused:
+                    log.debug(f"Skipping reload of task '{name}': not in spec registry")
+                    continue
                 raise EosConfigurationError(f"Task '{name}' not found in spec registry.")
             resolved.add(task_type)
 
         async with self._loading_lock:
+            to_reload: set[str] = set()
             for task_type in resolved:
-                await self._check_task_usage(db, task_type)
+                try:
+                    await self._check_task_usage(db, task_type)
+                except EosProtocolInUseError:
+                    if not if_unused:
+                        raise
+                    log.info(f"Skipping reload of task '{task_type}': in use")
+                    continue
+                to_reload.add(task_type)
 
-            for task_type in resolved:
+            for task_type in to_reload:
                 self._configuration_manager.refresh_task_spec(task_type)
                 self._configuration_manager.tasks.reload_plugin(task_type)
                 log.info(f"Reloaded task '{task_type}'")
+
+            if to_reload:
+                await self._configuration_manager.def_sync.sync_task_defs(db, types=to_reload)
+            return to_reload
 
     async def _check_tasks_using_devices(
         self, db: AsyncDbSession, lab_name: str, device_names: list[str] | None = None

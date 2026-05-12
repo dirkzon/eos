@@ -2,6 +2,7 @@ export interface ProtocolRunConfig {
   type: string;
   iterations: number;
   max_concurrent: number;
+  priority: number;
 }
 
 export interface SimConfig {
@@ -55,7 +56,31 @@ export interface SimStats {
   efficiency: number;
 }
 
+export interface DeadlockTaskInfo {
+  name: string;
+  blocked_on: string;
+}
+
+export interface DeadlockRunInfo {
+  protocol_run_name: string;
+  pending_tasks: DeadlockTaskInfo[];
+}
+
+export interface DeadlockLockInfo {
+  name: string;
+  owner: string;
+  held: boolean;
+}
+
+export interface DeadlockInfo {
+  queued_count: number;
+  pending_runs: DeadlockRunInfo[];
+  device_locks: DeadlockLockInfo[];
+  resource_locks: DeadlockLockInfo[];
+}
+
 export interface SimResults {
   timeline: TaskRecord[];
   stats: SimStats;
+  deadlock?: DeadlockInfo;
 }

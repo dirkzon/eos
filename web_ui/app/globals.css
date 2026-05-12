@@ -61,6 +61,19 @@ body {
   border-color: rgb(71 85 105);
 }
 
+/* Expand handle hit area without changing its bounding rect (so edges still
+   connect at the visible dot). The pseudo inherits pointer-events from the
+   parent handle, and elementFromPoint resolves to the parent. */
+.react-flow__handle::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 18px;
+  height: 18px;
+}
+
 /* ReactFlow selection box  */
 .react-flow__selection {
   background: rgba(59, 130, 246, 0.08);

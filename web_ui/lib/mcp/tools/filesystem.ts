@@ -1,8 +1,17 @@
 import { z } from 'zod/v3';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { textResult, errorResult } from '../helpers/format';
-import { ENTITY_FILE_NAMES, type EntityType } from '@/lib/types/filesystem';
+import { ENTITY_FILE_NAMES, type EntityType, type EntityLeafNode, type TreeNode } from '@/lib/types/filesystem';
 import { scanPackages, getPackageTree, readEntityFiles } from '@/lib/filesystem/operations';
+
+function flattenLeaves(nodes: TreeNode[]): EntityLeafNode[] {
+  const out: EntityLeafNode[] = [];
+  for (const node of nodes) {
+    if (node.kind === 'entity') out.push(node);
+    else out.push(...flattenLeaves(node.children));
+  }
+  return out;
+}
 
 export function registerFilesystemTools(server: McpServer) {
   server.registerTool(
@@ -52,9 +61,9 @@ export function registerFilesystemTools(server: McpServer) {
         const types = entity_type ? [entity_type] : (['devices', 'tasks', 'labs', 'protocols'] as const);
 
         const sections = types.map((type) => {
-          const entities = tree[type];
+          const entities = flattenLeaves(tree[type]);
           if (entities.length === 0) return `${type}: (none)`;
-          return `${type}:\n${entities.map((e) => `  • ${e.name} (yaml: ${e.hasYaml ? 'yes' : 'no'}, python: ${e.hasPython ? 'yes' : 'no'})`).join('\n')}`;
+          return `${type}:\n${entities.map((e) => `  • ${e.path} (yaml: ${e.hasYaml ? 'yes' : 'no'}, python: ${e.hasPython ? 'yes' : 'no'})`).join('\n')}`;
         });
 
         return textResult(`Package "${package_name}":\n\n${sections.join('\n\n')}`);

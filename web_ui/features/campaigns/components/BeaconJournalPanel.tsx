@@ -3,6 +3,9 @@
 import * as React from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
+import 'katex/dist/katex.min.css';
 import { Send, ChevronDown, ChevronRight, ChevronLeft, BookOpen } from 'lucide-react';
 import { Label } from '@/components/ui/Label';
 import { Textarea } from '@/components/ui/Textarea';
@@ -98,15 +101,37 @@ export function BeaconJournalPanel({ campaignName, journal, isRunning, onRefresh
               <Label className="text-sm font-medium">
                 Journal ({journal.length} {journal.length === 1 ? 'entry' : 'entries'})
               </Label>
-              <div className="max-h-96 overflow-auto border border-gray-200 dark:border-slate-700 rounded-md">
+              <div className="max-h-[32rem] overflow-auto border border-gray-200 dark:border-slate-700 rounded-md">
                 {pageEntries.map((entry, i) => (
                   <div
                     key={page * PAGE_SIZE + i}
-                    className={`px-3 py-2 text-xs text-gray-700 dark:text-gray-300 prose prose-xs dark:prose-invert max-w-none ${
+                    className={`px-3 py-2 text-xs text-gray-700 dark:text-gray-300 ${
                       i < pageEntries.length - 1 ? 'border-b border-gray-200 dark:border-slate-700' : ''
                     }`}
                   >
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{entry}</ReactMarkdown>
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm, remarkMath]}
+                      rehypePlugins={[rehypeKatex]}
+                      components={{
+                        h2: ({ children }) => (
+                          <h2 className="text-sm font-bold text-gray-900 dark:text-white mt-1 mb-2">{children}</h2>
+                        ),
+                        h3: ({ children }) => (
+                          <h3 className="text-xs font-semibold text-gray-800 dark:text-gray-200 mt-2 mb-1">
+                            {children}
+                          </h3>
+                        ),
+                        p: ({ children }) => <p className="my-1">{children}</p>,
+                        ul: ({ children }) => <ul className="my-1 ml-4 list-disc">{children}</ul>,
+                        ol: ({ children }) => <ol className="my-1 ml-4 list-decimal">{children}</ol>,
+                        li: ({ children }) => <li className="my-0.5">{children}</li>,
+                        strong: ({ children }) => (
+                          <strong className="font-semibold text-gray-900 dark:text-white">{children}</strong>
+                        ),
+                      }}
+                    >
+                      {entry}
+                    </ReactMarkdown>
                   </div>
                 ))}
               </div>

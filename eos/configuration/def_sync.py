@@ -39,18 +39,26 @@ class DefSync:
             log.error(f"Error syncing defs to database: {traceback.format_exc()}")
             raise
 
-    async def sync_task_defs(self, db: AsyncDbSession) -> None:
-        """Sync task definitions to the database."""
-        await self._sync_registry_defs(db, self._task_spec_registry, "task")
+    async def sync_task_defs(self, db: AsyncDbSession, types: set[str] | None = None) -> None:
+        """Sync task definitions to the database. Pass ``types`` to limit the upsert to specific task types."""
+        await self._sync_registry_defs(db, self._task_spec_registry, "task", types=types)
 
-    async def sync_device_defs(self, db: AsyncDbSession) -> None:
-        """Sync device definitions to the database."""
-        await self._sync_registry_defs(db, self._device_spec_registry, "device")
+    async def sync_device_defs(self, db: AsyncDbSession, types: set[str] | None = None) -> None:
+        """Sync device definitions to the database. Pass ``types`` to limit the upsert to specific device types."""
+        await self._sync_registry_defs(db, self._device_spec_registry, "device", types=types)
 
-    async def _sync_registry_defs(self, db: AsyncDbSession, registry: SpecRegistry, def_type: str) -> None:
-        """Sync defs from a registry to the database."""
+    async def _sync_registry_defs(
+        self,
+        db: AsyncDbSession,
+        registry: SpecRegistry,
+        def_type: str,
+        types: set[str] | None = None,
+    ) -> None:
+        """Sync defs from a registry to the database, optionally narrowed to ``types``."""
         defs_to_upsert = []
         for type_name, spec in registry.get_all_specs().items():
+            if types is not None and type_name not in types:
+                continue
             dir_path = registry.get_dir_by_type(type_name)
             if not dir_path:
                 log.warning(f"Could not find directory for {def_type} '{type_name}', skipping")
@@ -72,14 +80,16 @@ class DefSync:
             await self._batch_upsert_defs(db, defs_to_upsert)
             log.debug(f"Synced {len(defs_to_upsert)} {def_type} definitions to database")
 
-    async def sync_lab_defs(self, db: AsyncDbSession) -> None:
-        """Sync lab definitions to the database."""
-        await self._sync_entity_defs(db, EntityType.LAB, "lab", self._package_manager.read_lab, is_loaded=False)
-
-    async def sync_protocol_defs(self, db: AsyncDbSession) -> None:
-        """Sync protocol definitions to the database."""
+    async def sync_lab_defs(self, db: AsyncDbSession, names: set[str] | None = None) -> None:
+        """Sync lab definitions to the database. Pass ``names`` to limit the upsert to specific labs."""
         await self._sync_entity_defs(
-            db, EntityType.PROTOCOL, "protocol", self._package_manager.read_protocol, is_loaded=False
+            db, EntityType.LAB, "lab", self._package_manager.read_lab, is_loaded=False, names=names
+        )
+
+    async def sync_protocol_defs(self, db: AsyncDbSession, names: set[str] | None = None) -> None:
+        """Sync protocol definitions to the database. Pass ``names`` to limit the upsert to specific protocols."""
+        await self._sync_entity_defs(
+            db, EntityType.PROTOCOL, "protocol", self._package_manager.read_protocol, is_loaded=False, names=names
         )
 
     async def _sync_entity_defs(
@@ -89,11 +99,15 @@ class DefSync:
         def_type: str,
         read_config_fn,
         is_loaded: bool,
+        names: set[str] | None = None,
     ) -> None:
-        """Sync defs for an entity type from packages to the dionatabase."""
-        all_entity_types = set()
+        """Sync defs for an entity type from packages to the database, optionally narrowed to ``names``."""
+        all_entity_types: set[str] = set()
         for package in self._package_manager.get_all_packages():
             all_entity_types.update(self._package_manager.get_entities_in_package(package.name, entity_type))
+
+        if names is not None:
+            all_entity_types &= names
 
         defs_to_upsert = []
         for entity_name in all_entity_types:

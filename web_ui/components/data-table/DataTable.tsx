@@ -143,18 +143,27 @@ export function DataTable<TData, TValue>({
   }, [columns, enableRowSelection]);
 
   // Forward state changes to parent via effects (not inside state setters, which causes
-  // "Cannot update a component while rendering a different component" errors)
-  React.useEffect(() => {
-    if (manualPagination) onSortingChangeProp?.(sorting);
-  }, [sorting]); // eslint-disable-line react-hooks/exhaustive-deps
+  // "Cannot update a component while rendering a different component" errors).
+  // Keep refs to the parent callbacks so we always invoke the latest version
+  // without recreating the effect when the parent re-renders with a new callback identity.
+  const onSortingChangeRef = React.useRef(onSortingChangeProp);
+  const onColumnFiltersChangeRef = React.useRef(onColumnFiltersChangeProp);
+  const onGlobalFilterChangeRef = React.useRef(onGlobalFilterChangeProp);
+  onSortingChangeRef.current = onSortingChangeProp;
+  onColumnFiltersChangeRef.current = onColumnFiltersChangeProp;
+  onGlobalFilterChangeRef.current = onGlobalFilterChangeProp;
 
   React.useEffect(() => {
-    if (manualPagination) onColumnFiltersChangeProp?.(columnFilters);
-  }, [columnFilters]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (manualPagination) onSortingChangeRef.current?.(sorting);
+  }, [sorting, manualPagination]);
 
   React.useEffect(() => {
-    if (manualPagination) onGlobalFilterChangeProp?.(globalFilter);
-  }, [globalFilter]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (manualPagination) onColumnFiltersChangeRef.current?.(columnFilters);
+  }, [columnFilters, manualPagination]);
+
+  React.useEffect(() => {
+    if (manualPagination) onGlobalFilterChangeRef.current?.(globalFilter);
+  }, [globalFilter, manualPagination]);
 
   const table = useReactTable({
     data,

@@ -82,7 +82,12 @@ function GlobalParametersSection({
 
   return (
     <div className="space-y-4 pt-2 border-t border-gray-200 dark:border-slate-700">
-      <button type="button" onClick={() => setExpanded(!expanded)} className="flex items-center gap-2 w-full text-left">
+      <button
+        type="button"
+        tabIndex={-1}
+        onClick={() => setExpanded(!expanded)}
+        className="flex items-center gap-2 w-full text-left"
+      >
         {expanded ? (
           <ChevronDown className="h-4 w-4 text-gray-500 dark:text-gray-400" />
         ) : (
@@ -166,6 +171,7 @@ function GlobalParametersSection({
               >
                 <button
                   type="button"
+                  tabIndex={-1}
                   onClick={() => toggleTaskExpansion(taskConfig.name)}
                   className="w-full px-3 py-2.5 flex items-center justify-between hover:bg-gray-100 dark:hover:bg-slate-700/50 transition-colors rounded-t-md"
                 >
